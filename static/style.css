@@ -1,0 +1,200 @@
+/*
+ * Dark, dense, monospace-leaning — it sits next to a serial terminal all day.
+ * Plain CSS, no framework, no build step: the whole tool must stay
+ * "pip install and double-click a .bat".
+ */
+
+:root {
+  --bg:        #12151a;
+  --panel:     #1a1f27;
+  --panel-2:   #212832;
+  --line:      #2c3542;
+  --text:      #dfe6ef;
+  --muted:     #8794a5;
+  --accent:    #4da3ff;
+  --ok:        #4ccb7c;
+  --warn:      #ffb347;
+  --err:       #ff6b6b;
+  --mono: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+h1 { font-size: 17px; margin: 0; }
+h2 {
+  font-size: 13px; margin: 0 0 12px 0;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); font-weight: 600;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+h3 {
+  font-size: 11px; margin: 0 0 6px 0;
+  text-transform: uppercase; letter-spacing: .1em;
+  color: var(--muted); font-weight: 600;
+}
+
+.muted { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+.small { font-size: 11px; }
+.error { color: var(--err); }
+
+/* ---- top bar ---- */
+
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 16px; flex-wrap: wrap;
+  padding: 12px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 5;
+}
+
+.brand .sub { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+.conn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  display: inline-block; margin-left: 6px;
+}
+.dot.up   { background: var(--ok);  box-shadow: 0 0 8px var(--ok); }
+.dot.down { background: #555f6d; }
+.dot.stale { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
+.status-text { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+
+/* ---- controls ---- */
+
+select, input[type="text"], input[type="number"] {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+select { min-width: 240px; }
+select:disabled { opacity: .55; }
+input:focus, select:focus { outline: 1px solid var(--accent); }
+
+button {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 7px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--panel-2);
+  color: var(--text);
+}
+button:hover:not(:disabled) { filter: brightness(1.25); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: #1f4a7a; border-color: #2f6ba8; }
+button.secondary { background: #34405020; }
+button.danger  { background: #6d2530; border-color: #93313f; }
+button.ghost   { background: transparent; color: var(--muted); }
+button.small   { padding: 3px 8px; font-size: 11px; }
+
+/* ---- layout ---- */
+
+main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(360px, 1.1fr);
+  gap: 14px;
+}
+@media (max-width: 1000px) { .split { grid-template-columns: 1fr; } }
+
+/* ---- command panel ---- */
+
+.cmd-group { margin-bottom: 12px; }
+.cmd-row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.cmd {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  min-width: 170px;
+  max-width: 300px;
+  display: flex; flex-direction: column; gap: 7px;
+}
+.cmd button { width: 100%; font-family: var(--mono); }
+.cmd p { margin: 0; line-height: 1.35; }
+.cmd-danger { border-color: #6d2530; }
+
+.cmd-params { display: flex; gap: 8px; }
+.param {
+  display: flex; flex-direction: column; gap: 3px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.param input { width: 74px; }
+
+.raw { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.raw label { font-size: 12px; }
+.raw-row { display: flex; gap: 8px; margin-top: 6px; }
+.raw-row input { flex: 1; }
+#raw-hint { margin: 6px 0 0 0; }
+
+/* ---- telemetry card ---- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+.cell {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  min-height: 62px;
+}
+.cell-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted);
+}
+.cell-value {
+  font-family: var(--mono); font-size: 16px; margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+.cell-value.none { color: #5c6675; }
+.cell-unit { font-size: 10px; color: var(--muted); font-family: var(--mono); }
+
+/* ---- log ---- */
+
+.autoscroll { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+
+.log {
+  height: 340px;
+  overflow-y: auto;
+  background: #0d1015;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.log-row { display: flex; gap: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-time { color: #4d5666; flex: 0 0 auto; }
+.log-text { flex: 1 1 auto; }
+.log-ok    .log-text { color: var(--ok); }
+.log-error .log-text { color: var(--err); }
+.log-panel-note .log-text { color: var(--accent); }

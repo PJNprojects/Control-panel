@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<!--
+  The page is a SHELL, not a layout of controls.
+
+  Note what is absent: there are no <button> tags for SLEEP, WAKE, READ RFID
+  and friends. Those are built at runtime by static/app.js from whatever
+  GET /api/commands returns, which is whatever is in backend/commands.py.
+  Adding an eighth command must not require touching this file — if you ever
+  find yourself typing a command name in here, the registry has been bypassed
+  and the modularity is gone.
+
+  The only hardcoded control is the raw-command escape hatch, which is not a
+  command but a mechanism: it exists precisely so unregistered commands can be
+  tried without a code change.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collar Control Panel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <h1>Collar Control Panel</h1>
+    <span class="sub">ESP32 gateway &rarr; CattleNode collar &middot; {{ baud }} baud</span>
+  </div>
+
+  <div class="conn">
+    <select id="port-select" aria-label="Serial port">
+      <option value="">Scanning ports&hellip;</option>
+    </select>
+    <button id="btn-refresh" class="ghost" title="Re-scan serial ports">Refresh</button>
+    <button id="btn-connect" class="primary">Connect</button>
+    <span id="status-dot" class="dot down" title="Disconnected"></span>
+    <span id="status-text" class="status-text">Disconnected</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Built from /api/commands. Intentionally empty in the HTML. -->
+  <section class="panel" id="command-panel">
+    <h2>Commands</h2>
+    <div id="commands" class="commands">
+      <p class="muted">Loading command registry&hellip;</p>
+    </div>
+
+    <div class="raw">
+      <label for="raw-text">Raw command
+        <span class="muted">&mdash; sent verbatim, for anything without a button yet</span>
+      </label>
+      <div class="raw-row">
+        <input id="raw-text" type="text" maxlength="47" autocomplete="off"
+               placeholder="e.g. READ RFID 3 10">
+        <button id="btn-raw" class="secondary">Send</button>
+      </div>
+      <p class="muted small" id="raw-hint"></p>
+    </div>
+  </section>
+
+  <div class="split">
+
+    <section class="panel" id="telemetry-panel">
+      <h2>Latest reading
+        <span class="muted small" id="telemetry-meta">no packets yet</span>
+      </h2>
+      <div id="telemetry" class="grid">
+        <p class="muted">Waiting for the first record&hellip;</p>
+      </div>
+    </section>
+
+    <section class="panel" id="log-panel">
+      <h2>Log
+        <span class="muted small">&mdash; every &lsquo;#&rsquo; line: boot header, acks, panel notices</span>
+        <label class="autoscroll"><input type="checkbox" id="autoscroll" checked> follow</label>
+        <button id="btn-clear" class="ghost small">Clear</button>
+      </h2>
+      <div id="log" class="log"></div>
+    </section>
+
+  </div>
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Python virtual environment created by Launch_ControlPanel.bat
+venv/
+.venv/
+
+# Bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.swp
+
+# Nothing in this project writes logs yet; this is here so that the first
+# person who adds a capture-to-file feature does not commit a 200 MB session.
+*.log
+captures/

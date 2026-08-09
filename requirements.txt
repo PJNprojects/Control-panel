@@ -1,0 +1,16 @@
+# PC Control Panel — Python dependencies.
+#
+# Two, and only two. Every addition here is something a future maintainer has
+# to install on a bench PC that may well have no internet, so the bar is high.
+#
+#   Flask     — the web server and template/static handling. Server-Sent
+#               Events need nothing beyond a plain streaming Response, which
+#               is why there is no Flask-SocketIO here.
+#   pyserial  — the COM port. `serial.tools.list_ports` is what fills the port
+#               dropdown; it ships with pyserial, not separately.
+#
+# Pinned exactly rather than floated: this drives hardware, and "it worked
+# last month" should keep being true. Bump deliberately, not incidentally.
+
+Flask==3.0.3
+pyserial==3.5
