@@ -61,6 +61,168 @@
     </div>
   </section>
 
+  <section class="panel" id="imu-panel">
+    <h2>IMU Orientation
+      <span class="muted small" id="imu-meta">yaw is relative &amp; drifts &mdash; no magnetometer on the collar</span>
+      <button id="btn-imu-reset" class="ghost small">Reset origin</button>
+    </h2>
+    <div class="imu-widget">
+      <svg id="imu-dial" viewBox="0 0 220 220" width="220" height="220" aria-label="Yaw dial with pitch/roll crosshair">
+        <circle class="dial-ring" cx="110" cy="110" r="95"></circle>
+        <circle class="dial-ring-inner" cx="110" cy="110" r="60"></circle>
+        <line class="dial-axis" x1="110" y1="15" x2="110" y2="205"></line>
+        <line class="dial-axis" x1="15" y1="110" x2="205" y2="110"></line>
+
+        <!-- 4 arrow markers, 90deg apart, rotate together as the yaw dial -->
+        <g id="yaw-markers">
+          <polygon points="110,10 103,24 117,24"></polygon>
+          <polygon points="110,10 103,24 117,24" transform="rotate(90 110 110)"></polygon>
+          <polygon points="110,10 103,24 117,24" transform="rotate(180 110 110)"></polygon>
+          <polygon points="110,10 103,24 117,24" transform="rotate(270 110 110)"></polygon>
+        </g>
+
+        <!-- '+' crosshair, translates with pitch (y) / roll (x) -->
+        <g id="crosshair">
+          <line x1="-16" y1="0" x2="16" y2="0" transform="translate(110 110)"></line>
+          <line x1="0" y1="-16" x2="0" y2="16" transform="translate(110 110)"></line>
+          <circle cx="110" cy="110" r="3"></circle>
+        </g>
+      </svg>
+
+      <div class="imu-readout">
+        <div class="readout-row"><span class="readout-label">yaw</span><span id="imu-yaw-value" class="readout-value">0.0&deg;</span></div>
+        <div class="readout-row"><span class="readout-label">pitch</span><span id="imu-pitch-value" class="readout-value">-</span></div>
+        <div class="readout-row"><span class="readout-label">roll</span><span id="imu-roll-value" class="readout-value">-</span></div>
+      </div>
+
+      <div class="gravity-bar-wrap">
+        <div class="gravity-bar-label">|g|</div>
+        <div class="gravity-bar-track">
+          <div id="gravity-bar-ref" class="gravity-bar-ref" title="1 g"></div>
+          <div id="gravity-bar-fill" class="gravity-bar-fill"></div>
+        </div>
+        <div id="gravity-bar-value" class="gravity-bar-value">-</div>
+      </div>
+
+      <!-- Gyro rate bar graph — ported straight from the Fusion Module's
+           OLED (imu_oled_test.cpp drawBar): three columns, one per axis,
+           each a LIVE RATE deflection from a shared centerline that grows
+           while rotating and relaxes back to center when it stops. Not an
+           integrated/persisted position — same anti-drift reasoning as the
+           firmware comment: a rate gauge has nothing to accumulate, so
+           nothing to drift. Accel's equivalent is the crosshair on the dial
+           above (that hardware used a ball-in-a-table for the same job). -->
+      <div class="gyro-bargraph">
+        <div class="cluster-label">gyro rate (rad/s)</div>
+        <div class="gyro-bar-row">
+          <div class="gyro-bar-col">
+            <div class="gyro-bar-track"><div class="gyro-bar-zero"></div><div id="bar-gx" class="gyro-bar-fill"></div></div>
+            <div class="gyro-bar-label">X</div>
+            <div id="val-gx" class="gyro-bar-value">-</div>
+          </div>
+          <div class="gyro-bar-col">
+            <div class="gyro-bar-track"><div class="gyro-bar-zero"></div><div id="bar-gy" class="gyro-bar-fill"></div></div>
+            <div class="gyro-bar-label">Y</div>
+            <div id="val-gy" class="gyro-bar-value">-</div>
+          </div>
+          <div class="gyro-bar-col">
+            <div class="gyro-bar-track"><div class="gyro-bar-zero"></div><div id="bar-gz" class="gyro-bar-fill"></div></div>
+            <div class="gyro-bar-label">Z</div>
+            <div id="val-gz" class="gyro-bar-value">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Temp + RFID, pulled straight off the same telemetry record,
+           called out big since they're the two "did something just happen"
+           signals an operator scans for at a glance. -->
+      <div class="imu-highlight">
+        <div class="highlight-card">
+          <div class="highlight-label">temp</div>
+          <div id="imu-temp-value" class="highlight-value">-</div>
+          <div class="highlight-unit">&deg;C implant</div>
+        </div>
+        <div class="highlight-card">
+          <div class="highlight-label">rfid id</div>
+          <div id="imu-rfid-value" class="highlight-value small">-</div>
+        </div>
+      </div>
+
+      <!-- Rolling window, not a log — bounded arrays redrawn to a canvas, so
+           it stays cheap no matter how long the session runs. -->
+      <div class="imu-charts">
+        <div class="chart-card">
+          <div class="chart-head">
+            <span class="cluster-label">accel m/s&sup2; &mdash; recent</span>
+            <span class="chart-legend">
+              <span class="legend-dot accel-x"></span>x
+              <span class="legend-dot accel-y"></span>y
+              <span class="legend-dot accel-z"></span>z
+            </span>
+          </div>
+          <canvas id="chart-accel" width="260" height="90"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-head">
+            <span class="cluster-label">gyro rad/s &mdash; recent</span>
+            <span class="chart-legend">
+              <span class="legend-dot gyro-x"></span>x
+              <span class="legend-dot gyro-y"></span>y
+              <span class="legend-dot gyro-z"></span>z
+            </span>
+          </div>
+          <canvas id="chart-gyro" width="260" height="90"></canvas>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Scan history: a log of discrete RFID READ attempts (the manual
+       READ RFID <n> <m> button, or the auto-scan timer below), each
+       resolved to a found tag or a timeout, with a wall-clock timestamp.
+       Deliberately NOT fed by READ RFID LOOP - continuous scanning has no
+       natural "one attempt, one verdict" boundary, so logging every fresh
+       telemetry sighting there would just be noise. This lives entirely in
+       the browser tab (bounded array, no backend) - see the tooltip on the
+       period control for what that means for reliability. -->
+  <section class="panel" id="scan-history-panel">
+    <h2>RFID Scan History
+      <span class="muted small" id="scan-history-meta">0 scans logged</span>
+      <button id="btn-scan-clear" class="ghost small">Clear</button>
+      <button id="btn-scan-download" class="ghost small">Download CSV</button>
+    </h2>
+
+    <div class="scan-controls">
+      <label class="param" title="How often the auto-scan timer fires a one-shot READ RFID while running.">
+        period (s)
+        <input id="scan-period-input" type="number" min="2" max="3600" value="30">
+      </label>
+      <label class="param" title="n - stop early once this many CRC-valid reads land (same as the READ RFID <n> <m> button above).">
+        n
+        <input id="scan-n-input" type="number" min="0" max="255" value="5">
+      </label>
+      <label class="param" title="m - attempt cap per scheduled scan, ~70ms each.">
+        m
+        <input id="scan-m-input" type="number" min="0" max="255" value="20">
+      </label>
+      <button id="btn-scan-auto-toggle" class="press-toggle scan-auto-toggle"
+              title="Fires a READ RFID {n} {m} on the period above and logs the result, found or not. Runs in THIS browser tab only - it stops if the tab is closed, and browsers slow down timers in a backgrounded tab, so this is a bench-side convenience, not a walk-away scheduler.">
+        Start Auto-Scan
+      </button>
+    </div>
+
+    <div class="scan-table-wrap">
+      <table class="scan-table">
+        <thead>
+          <tr><th>Time</th><th>Tag ID</th><th>Temp</th><th>Result</th><th>Source</th><th>GW ts</th></tr>
+        </thead>
+        <tbody id="scan-history-body">
+          <tr><td colspan="6" class="muted">No scans logged yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <div class="split">
 
     <section class="panel" id="telemetry-panel">

@@ -153,6 +153,47 @@ class Command:
     danger: bool = False
     params: List[ParamSpec] = field(default_factory=list)
 
+    # --- Toggle pairing, optional -------------------------------------
+    # Two commands that are really one on/off control (SLEEP+WAKE, IMU
+    # RUN+HALT, READ RFID LOOP+STOP RFID LOOP) declare the SAME
+    # toggle_group and opposite toggle_state ("on"/"off"). The browser
+    # renders any complete pair as a single switch instead of two buttons -
+    # this is data on the registry entries, not a special case in the UI,
+    # so the "add a command = one entry here" rule from the module
+    # docstring still holds for toggle pairs too.
+    #
+    # toggle_default says which side the switch should show BEFORE any
+    # command has been sent this session, taken from the collar's
+    # documented boot behaviour (HANDOFF.md section 4): not asleep, IMU
+    # halted, RFID loop stopped. It is a starting guess, not a read-back -
+    # see the reality check below.
+    toggle_group: Optional[str] = None
+    toggle_state: Optional[str] = None    # "on" | "off"
+    toggle_style: Optional[str] = None    # "slider" | "press"
+    toggle_label: Optional[str] = None    # caption shown on the control
+    toggle_default: Optional[str] = None  # "on" | "off"
+
+    # What a "press" toggle's BUTTON ITSELF says in this state, as opposed to
+    # `label` (which is this command's own name, used in tooltips/logs). A
+    # press-toggle showing its OFF-state button as "STOP RFID LOOP" reads as
+    # a live control for something that isn't running - confusing, not
+    # merely cosmetic. toggle_text is the fix: each half of a pair says what
+    # a status button should say ("Start IMU" / "IMU RUNNING"), independent
+    # of the underlying command's own label. Optional - a control falls back
+    # to `label` if unset (that's fine for the slider, where "SLEEP"/"WAKE"
+    # already read naturally as states).
+    toggle_text: Optional[str] = None
+
+    # --- RFID one-shot "no tag found" timeout, optional -----------------
+    # READ RFID <n> <m> has no completion signal (README section 6) - the
+    # gateway never says "done, found nothing." The one honest thing the
+    # browser CAN infer is a time budget: m attempts at ~70ms each
+    # (HANDOFF.md), after which "no fresh tag showed up" is a fair
+    # best-effort read. rfid_scan_probe_param names which of THIS command's
+    # own params holds that attempt count ("m") so the UI can compute the
+    # budget generically, without hardcoding this command's name.
+    rfid_scan_probe_param: Optional[str] = None
+
     def to_json(self) -> Dict[str, Any]:
         return {
             "name": self.name,
@@ -162,6 +203,13 @@ class Command:
             "group": self.group,
             "danger": self.danger,
             "params": [p.to_json() for p in self.params],
+            "toggle_group": self.toggle_group,
+            "toggle_state": self.toggle_state,
+            "toggle_style": self.toggle_style,
+            "toggle_label": self.toggle_label,
+            "toggle_default": self.toggle_default,
+            "toggle_text": self.toggle_text,
+            "rfid_scan_probe_param": self.rfid_scan_probe_param,
         }
 
     def render(self, params: Optional[Dict[str, Any]] = None) -> str:
@@ -197,6 +245,19 @@ class Command:
 #  Seven entries, one per row of `ESP Gateway/HANDOFF.md` section 2's table.
 #  To add an eighth command: add a dict-equivalent Command(...) here. That is
 #  the whole change — the API and the UI pick it up automatically.
+#
+#  THREE OF THEM ARE TOGGLE PAIRS, AND A REALITY CHECK ABOUT WHAT THAT MEANS
+#  ---------------------------------------------------------------------------
+#  SLEEP/WAKE, IMU RUN/HALT, and READ RFID LOOP/STOP RFID LOOP each render as
+#  one switch instead of two buttons (see toggle_group above). The switch
+#  position is the LAST STATE THE OPERATOR SENT, not a confirmed hardware
+#  state — the gateway has no reply channel ("-> sent is not -> done", see
+#  README section 1), so there is no packet that could tell the browser the
+#  collar actually obeyed. If a command is rejected the switch snaps back;
+#  if it is accepted but the collar ignores it for some other reason, the
+#  switch will show the wrong thing and the only ground truth is still what
+#  README.md always said it was: read it off the telemetry (IMU columns
+#  leaving '-', the stream stopping, etc.), not off this control.
 # ---------------------------------------------------------------------------
 
 COMMANDS: List[Command] = [
@@ -205,12 +266,16 @@ COMMANDS: List[Command] = [
         label="SLEEP",
         send="SLEEP",
         group="power",
-        danger=True,
         description=(
             "Stops the packet stream and forces the RFID field off. An overlay, "
             "not a mode change - whatever was running underneath is preserved. "
             "Telemetry goes silent until WAKE."
         ),
+        toggle_group="power",
+        toggle_state="off",
+        toggle_style="slider",
+        toggle_label="SLEEP / WAKE",
+        toggle_default="on",   # collar is not asleep by default
     ),
     Command(
         name="wake",
@@ -221,6 +286,11 @@ COMMANDS: List[Command] = [
             "Clears sleep and resumes exactly what was configured before. You do "
             "NOT need to re-send READ RFID LOOP / IMU RUN afterwards."
         ),
+        toggle_group="power",
+        toggle_state="on",
+        toggle_style="slider",
+        toggle_label="SLEEP / WAKE",
+        toggle_default="on",
     ),
     Command(
         name="read_rfid_once",
@@ -250,6 +320,7 @@ COMMANDS: List[Command] = [
                 help="Hard ceiling on capture attempts (~70 ms each).",
             ),
         ],
+        rfid_scan_probe_param="m",
     ),
     Command(
         name="read_rfid_loop",
@@ -257,6 +328,12 @@ COMMANDS: List[Command] = [
         send="READ RFID LOOP",
         group="rfid",
         description="Start continuous scanning.",
+        toggle_group="rfid_loop",
+        toggle_state="on",
+        toggle_style="press",
+        toggle_label="RFID LOOP",
+        toggle_default="off",   # collar does not scan by default
+        toggle_text="RFID SCANNING",
     ),
     Command(
         name="stop_rfid_loop",
@@ -267,6 +344,12 @@ COMMANDS: List[Command] = [
             "Stop continuous scanning. Fixed three-word phrase - 'STOP RFID' is "
             "not a shorthand the gateway accepts."
         ),
+        toggle_group="rfid_loop",
+        toggle_state="off",
+        toggle_style="press",
+        toggle_label="RFID LOOP",
+        toggle_default="off",
+        toggle_text="Start RFID Scan",
     ),
     Command(
         name="imu_run",
@@ -274,6 +357,12 @@ COMMANDS: List[Command] = [
         send="IMU RUN",
         group="imu",
         description="Start populating the IMU fields (ax..gz stop reading '-').",
+        toggle_group="imu_run",
+        toggle_state="on",
+        toggle_style="press",
+        toggle_label="IMU",
+        toggle_default="off",   # collar boots with the IMU halted
+        toggle_text="IMU RUNNING",
     ),
     Command(
         name="imu_halt",
@@ -285,6 +374,12 @@ COMMANDS: List[Command] = [
             "keep flowing with '-' in the IMU columns. Only SLEEP stops the "
             "stream. Note the word is HALT, not STOP."
         ),
+        toggle_group="imu_run",
+        toggle_state="off",
+        toggle_style="press",
+        toggle_label="IMU",
+        toggle_default="off",
+        toggle_text="Start IMU",
     ),
 ]
 

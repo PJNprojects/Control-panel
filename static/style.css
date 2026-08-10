@@ -123,34 +123,402 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 
 /* ---- command panel ---- */
 
-.cmd-group { margin-bottom: 12px; }
-.cmd-row { display: flex; gap: 10px; flex-wrap: wrap; }
+/* Groups sit side by side as compact vertical columns, so the whole panel
+   stays short instead of a tall wrapping wall of wide cards. */
+#commands { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
+.cmd-group { margin-bottom: 0; }
+.cmd-row { display: flex; flex-direction: column; gap: 6px; }
 
 .cmd {
+  position: relative; /* tooltip anchor */
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 10px;
-  min-width: 170px;
-  max-width: 300px;
-  display: flex; flex-direction: column; gap: 7px;
+  border-radius: 5px;
+  padding: 6px 7px;
+  min-width: 128px;
+  max-width: 168px;
+  display: flex; flex-direction: column; gap: 5px;
 }
-.cmd button { width: 100%; font-family: var(--mono); }
-.cmd p { margin: 0; line-height: 1.35; }
+.cmd button { width: 100%; font-family: var(--mono); font-size: 11px; padding: 5px 7px; }
 .cmd-danger { border-color: #6d2530; }
 
-.cmd-params { display: flex; gap: 8px; }
+.cmd-params { display: flex; gap: 6px; }
 .param {
-  display: flex; flex-direction: column; gap: 3px;
-  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  display: flex; flex-direction: column; gap: 2px;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
 }
-.param input { width: 74px; }
+.param input { width: 52px; padding: 3px 5px; font-size: 11px; }
+
+/* Hover tooltip — replaces the old always-visible description paragraph.
+   Description text now only appears on demand, which is most of why the
+   command panel got smaller. */
+.cmd[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 0;
+  width: 190px;
+  background: #0d1015;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 7px 9px;
+  font-size: 11px;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  z-index: 30;
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  pointer-events: none;
+}
+/* Cards near the right edge flip the tooltip to the left so it doesn't run
+   off-screen; harmless on cards with room, since it only shows on hover. */
+.cmd[data-tooltip]:hover::before {
+  content: "";
+  position: absolute;
+  left: 100%;
+  top: 6px;
+  border: 5px solid transparent;
+  border-right-color: var(--line);
+  z-index: 30;
+}
+
+/* ---- toggle controls: slider (SLEEP/WAKE) + press-toggle (IMU, RFID LOOP) ----
+   Deliberately flat: no shadows, no glow — state is communicated by color
+   alone. Green = on / active (same meaning "up"/"ok" already carry
+   elsewhere in this UI); slate = off / idle, not an error, just dormant. */
+
+.cmd-toggle { align-items: center; text-align: center; gap: 6px; }
+.toggle-caption {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+}
+.toggle-state-text {
+  font-size: 11px; font-family: var(--mono); font-weight: 700; color: var(--text);
+}
+
+.slider-switch { position: relative; display: inline-block; width: 46px; height: 24px; }
+.slider-switch input {
+  position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; z-index: 2;
+}
+.slider-track {
+  position: absolute; inset: 0;
+  background: #3a4452;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  transition: background .15s ease-out, border-color .15s ease-out;
+}
+.slider-knob {
+  position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #c7d0dc;
+  transition: left .15s ease-out, background .15s ease-out;
+}
+.slider-switch.is-on .slider-track { background: var(--ok); border-color: #3fae6c; }
+.slider-switch.is-on .slider-knob  { left: 24px; background: #eafff1; }
+.slider-switch.is-off .slider-track { background: #3a4452; border-color: var(--line); }
+.slider-switch.is-off .slider-knob  { left: 2px; background: #c7d0dc; }
+.slider-switch input:disabled { cursor: default; }
+
+.press-toggle {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 7px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: #3a4452;
+  color: var(--text);
+  cursor: pointer;
+}
+.press-toggle:hover:not(:disabled) { filter: brightness(1.15); }
+.press-toggle.is-on  { background: var(--ok); border-color: #3fae6c; color: #06210f; }
+.press-toggle.is-off { background: #3a4452; border-color: var(--line); color: var(--text); }
+.press-toggle:disabled { opacity: .5; cursor: default; }
 
 .raw { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 12px; }
 .raw label { font-size: 12px; }
 .raw-row { display: flex; gap: 8px; margin-top: 6px; }
 .raw-row input { flex: 1; }
 #raw-hint { margin: 6px 0 0 0; }
+
+/* ---- IMU orientation widget ---- */
+
+#imu-panel h2 { justify-content: flex-start; }
+#imu-panel #btn-imu-reset { margin-left: auto; }
+
+.imu-widget {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+#imu-dial { flex: 0 0 auto; }
+
+.dial-ring { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+.dial-ring-inner { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 3; }
+.dial-axis { stroke: var(--line); stroke-width: 1; }
+
+#yaw-markers polygon { fill: var(--accent); }
+#imu-dial.imu-inactive #yaw-markers polygon { fill: #4d5666; }
+/* Smooths the rotation/translation itself, on top of the EMA filter on the
+   underlying values — the filter kills sample-to-sample jitter, this kills
+   the remaining visual "snap" between frames. */
+#yaw-markers, #crosshair { transition: transform .2s ease-out; }
+
+#crosshair line { stroke: var(--warn); stroke-width: 2.5; stroke-linecap: round; }
+#crosshair circle { fill: var(--warn); }
+#imu-dial.imu-inactive #crosshair line,
+#imu-dial.imu-inactive #crosshair circle { stroke: #4d5666; fill: #4d5666; }
+
+.imu-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 110px;
+}
+.readout-row {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-family: var(--mono); font-size: 13px;
+}
+.readout-label { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: .06em; }
+/* Fixed width + tabular-nums so "5.0°" -> "-15.0°" doesn't change the box
+   size every packet - that per-frame width change was the "vibrating"
+   layout: a flex item resizing on every update shoves every sibling after
+   it sideways by a couple of px, which reads as a jitter/flicker at
+   ~2 updates/sec. Reserving the width up front means the number can change
+   without the box around it ever doing so. */
+.readout-value {
+  display: inline-block;
+  width: 64px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gravity-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.gravity-bar-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+}
+.gravity-bar-track {
+  position: relative;
+  width: 34px;
+  height: 160px;
+  background: #0d1015;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.gravity-bar-fill {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 0%;
+  background: linear-gradient(to top, var(--accent), #7cc6ff);
+  transition: height .15s ease-out;
+}
+.gravity-bar-ref {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 49.05%; /* 9.81 / 20 m/s^2 full-scale */
+  border-top: 1px dashed var(--warn);
+  height: 0;
+}
+.gravity-bar-value {
+  display: block;
+  width: 72px;
+  font-family: var(--mono); font-size: 12px; color: var(--text);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- gyro rate bar graph (ported from imu_oled_test.cpp's drawBar) ---- */
+
+.cluster-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+}
+
+.gyro-bargraph { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.gyro-bar-row { display: flex; gap: 12px; }
+.gyro-bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.gyro-bar-track {
+  position: relative;
+  width: 20px;
+  height: 90px;
+  background: #0d1015;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.gyro-bar-zero {
+  position: absolute; left: 0; right: 0; top: 50%; height: 0;
+  border-top: 1px solid var(--line);
+}
+.gyro-bar-fill {
+  position: absolute; left: 1px; right: 1px;
+  background: linear-gradient(to top, var(--ok), #8de6ac);
+  transition: top .15s ease-out, height .15s ease-out;
+}
+.gyro-bar-label { font-size: 11px; color: var(--muted); font-family: var(--mono); font-weight: 600; }
+.gyro-bar-value {
+  display: block;
+  width: 40px;
+  font-size: 10px; font-family: var(--mono); color: var(--text);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- temp / RFID highlight, next to the bar graphs ---- */
+
+.imu-highlight { display: flex; flex-direction: column; gap: 8px; }
+.highlight-card {
+  background: #0d1015;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 10px;
+  width: 160px;
+  min-height: 56px;
+  text-align: center;
+}
+.highlight-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+}
+/* Fixed width, sized for the widest real value (a 15-digit rfid_id at the
+   small font), so "-" -> a full reading doesn't resize the card. Unlike the
+   other numeric readouts this one is NOT truncated with an ellipsis - an
+   RFID tag ID is exactly the value an operator needs to read in full, so
+   the box is sized to fit it instead of hiding part of it. */
+.highlight-value {
+  display: block;
+  width: 100%;
+  font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--text);
+  margin-top: 2px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.highlight-value.small { font-size: 13px; letter-spacing: .01em; }
+.highlight-value.none { color: #5c6675; font-weight: 400; }
+.highlight-value.stale { color: var(--warn); }
+.highlight-value.warn  { color: var(--warn); }
+.highlight-unit { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+/* Card accent (the left edge) carries the same state as the value text, so
+   it reads at a glance without having to read the number: blue = nothing
+   seen yet this session, green = a fresh read just landed, amber = seen
+   before but gone quiet a while / a one-shot scan came up empty. This is
+   the "so we can see the change" bit - the color itself changes on the
+   events that matter instead of everything staying visually identical
+   whether a tag was just found or nothing has happened all session. */
+.highlight-card.card-idle  { border-left-color: var(--accent); }
+.highlight-card.card-fresh { border-left-color: var(--ok); transition: border-left-color .2s ease-out; }
+.highlight-card.card-stale { border-left-color: var(--warn); }
+.highlight-card.card-warn  { border-left-color: var(--warn); }
+
+/* ---- IMU rolling time graphs ---- */
+
+.imu-charts { display: flex; flex-direction: column; gap: 10px; }
+.chart-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.chart-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
+.chart-legend { font-size: 10px; color: var(--muted); font-family: var(--mono); display: flex; align-items: center; gap: 3px; }
+.legend-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-left: 8px; margin-right: 2px;
+}
+.legend-dot:first-child { margin-left: 0; }
+.legend-dot.accel-x, .legend-dot.gyro-x { background: var(--accent); }
+.legend-dot.accel-y, .legend-dot.gyro-y { background: var(--ok); }
+.legend-dot.accel-z, .legend-dot.gyro-z { background: var(--warn); }
+
+#chart-accel, #chart-gyro {
+  display: block;
+  background: #0d1015;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+/* ---- RFID scan history ---- */
+
+#scan-history-panel h2 #btn-scan-clear,
+#scan-history-panel h2 #btn-scan-download { margin-left: auto; }
+#scan-history-panel h2 #btn-scan-download { margin-left: 8px; }
+
+.scan-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--line);
+}
+.scan-controls .param input { width: 64px; }
+.scan-auto-toggle {
+  width: auto;
+  min-width: 150px;
+  padding: 7px 14px;
+}
+
+.scan-table-wrap {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0d1015;
+}
+.scan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.scan-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-2);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  font-size: 10px;
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.scan-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid #1c222b;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.scan-table tbody tr:hover { background: #151a21; }
+.scan-table td.scan-result-found { color: var(--ok); font-weight: 600; }
+.scan-table td.scan-result-none  { color: var(--warn); font-weight: 600; }
+.scan-table td.scan-source { color: var(--muted); text-transform: uppercase; font-size: 10px; }
 
 /* ---- telemetry card ---- */
 
@@ -173,6 +541,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .cell-value {
   font-family: var(--mono); font-size: 16px; margin: 2px 0;
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 .cell-value.none { color: #5c6675; }
 .cell-unit { font-size: 10px; color: var(--muted); font-family: var(--mono); }
