@@ -21,7 +21,7 @@ WHAT IT COVERS, AND WHY EACH ONE
                           exits.
   3. Clean shutdown       an idle port and a stop flag: the thread must leave
                           within one read timeout, not hang.
-  4. Command registry     all seven commands rendered byte-for-byte against the
+  4. Command registry     all five buttoned commands rendered byte-for-byte against the
                           table in ESP Gateway/HANDOFF.md section 2.
   5. Validation           out-of-range / unknown / malformed input rejected AND
                           proven to have attempted no serial write.
@@ -284,13 +284,18 @@ def test_reader_thread_shutdown():
 #  4. Command registry - byte-for-byte against HANDOFF.md section 2
 # ---------------------------------------------------------------------------
 
-# Left column of the table in ESP Gateway/HANDOFF.md section 2.
+# Left column of the table in ESP Gateway/HANDOFF.md section 2. Only five of
+# its seven rows have a registry entry (and therefore a button) - READ RFID
+# LOOP / STOP RFID LOOP were deliberately unbuttoned (see the comment above
+# their old spot in commands.py's COMMANDS list); both are still valid
+# gateway commands, reachable through the raw command box, just not tested
+# here since there's no registry entry for render_command to render.
+# read_rfid_once's n is hardcoded to 1 (see the comment on it in
+# commands.py) - only m is a real parameter now.
 EXPECTED = {
     "sleep":          ("SLEEP",             {}),
     "wake":           ("WAKE",              {}),
-    "read_rfid_once": ("READ RFID 5 20",    {"n": 5, "m": 20}),
-    "read_rfid_loop": ("READ RFID LOOP",    {}),
-    "stop_rfid_loop": ("STOP RFID LOOP",    {}),
+    "read_rfid_once": ("READ RFID 1 20",    {"m": 20}),
     "imu_run":        ("IMU RUN",           {}),
     "imu_halt":       ("IMU HALT",          {}),
 }
@@ -300,7 +305,7 @@ def test_command_registry():
     section("4. Command registry - exact wire text")
 
     names = [c.name for c in registry.COMMANDS]
-    check(len(names) == 7, "registry holds exactly seven commands", repr(names))
+    check(len(names) == 5, "registry holds exactly five buttoned commands", repr(names))
     check(set(names) == set(EXPECTED), "registry names match the expected set",
           repr(sorted(names)))
 
@@ -316,14 +321,17 @@ def test_command_registry():
         check(got.encode("ascii") == expected.encode("ascii"),
               "%-16s is pure ASCII, byte-for-byte" % name)
 
-    # Whitespace-normalised numbers: the gateway echoes "READ RFID 5 20" for
-    # input "read   rfid  005  20", and so must we, so the echo matches.
-    check(registry.render_command("read_rfid_once", {"n": "005", "m": " 20 "})
-          == "READ RFID 5 20",
+    # Whitespace-normalised numbers: the gateway echoes "READ RFID 1 20" for
+    # input "read   rfid  1  020", and so must we, so the echo matches.
+    check(registry.render_command("read_rfid_once", {"m": " 020 "})
+          == "READ RFID 1 20",
           "string params normalise to canonical decimal form")
-    check(registry.render_command("read_rfid_once", {"n": 0, "m": 255})
-          == "READ RFID 0 255",
-          "range endpoints 0 and 255 are accepted")
+    check(registry.render_command("read_rfid_once", {"m": 0})
+          == "READ RFID 1 0",
+          "range endpoint 0 is accepted")
+    check(registry.render_command("read_rfid_once", {"m": 255})
+          == "READ RFID 1 255",
+          "range endpoint 255 is accepted")
 
 
 def test_command_validation():
@@ -340,20 +348,24 @@ def test_command_validation():
             return
         check(False, "%s -- NOT rejected" % description, "returned %r" % result)
 
-    rejects("n=999 out of range",
-            lambda: registry.render_command("read_rfid_once", {"n": 999, "m": 20}))
+    rejects("m=999 out of range",
+            lambda: registry.render_command("read_rfid_once", {"m": 999}))
     rejects("m=256 just over the byte ceiling",
-            lambda: registry.render_command("read_rfid_once", {"n": 5, "m": 256}))
-    rejects("n=-1 below range",
-            lambda: registry.render_command("read_rfid_once", {"n": -1, "m": 20}))
-    rejects("n missing entirely",
-            lambda: registry.render_command("read_rfid_once", {"m": 20}))
-    rejects("non-numeric n",
-            lambda: registry.render_command("read_rfid_once",
-                                            {"n": "banana", "m": 20}))
+            lambda: registry.render_command("read_rfid_once", {"m": 256}))
+    rejects("m=-1 below range",
+            lambda: registry.render_command("read_rfid_once", {"m": -1}))
+    rejects("m missing entirely",
+            lambda: registry.render_command("read_rfid_once", {}))
+    rejects("non-numeric m",
+            lambda: registry.render_command("read_rfid_once", {"m": "banana"}))
     rejects("unexpected extra parameter",
-            lambda: registry.render_command("read_rfid_once",
-                                            {"n": 5, "m": 20, "z": 1}))
+            lambda: registry.render_command("read_rfid_once", {"m": 20, "z": 1}))
+    # n used to be a real parameter (up through 2026-08-09); it is now
+    # hardcoded to 1 in the send template, so supplying it must be rejected
+    # the same as any other unrecognised key - proves the old n knob is
+    # actually gone, not just hidden from the UI.
+    rejects("n is no longer a parameter - supplying it is rejected",
+            lambda: registry.render_command("read_rfid_once", {"n": 1, "m": 20}))
     rejects("unknown command name",
             lambda: registry.render_command("self_destruct", {}))
     rejects("params on a no-argument command",
@@ -391,7 +403,7 @@ def test_http_layer_no_write_on_reject():
     try:
         response = client.post("/api/command",
                                json={"name": "read_rfid_once",
-                                     "params": {"n": 999, "m": 20}})
+                                     "params": {"m": 999}})
         body = response.get_json()
         check(response.status_code == 400, "out-of-range POST returns HTTP 400",
               "got %d" % response.status_code)
@@ -409,11 +421,11 @@ def test_http_layer_no_write_on_reject():
 
         response = client.post("/api/command",
                                json={"name": "read_rfid_once",
-                                     "params": {"n": 5, "m": 20}})
+                                     "params": {"m": 20}})
         body = response.get_json()
-        check(response.status_code == 200 and body.get("sent") == "READ RFID 5 20",
+        check(response.status_code == 200 and body.get("sent") == "READ RFID 1 20",
               "valid command reaches the write path with exact text", repr(body))
-        check(writes == ["READ RFID 5 20"], "exactly one write, exact text",
+        check(writes == ["READ RFID 1 20"], "exactly one write, exact text",
               repr(writes))
 
         writes.clear()
@@ -561,7 +573,7 @@ def test_live_server():
     with urllib.request.urlopen(base + "/api/commands", timeout=3) as response:
         body = json.loads(response.read().decode("utf-8"))
     check(response.status == 200 and body["ok"], "GET /api/commands -> 200 ok")
-    check(len(body["commands"]) == 7, "seven commands served to the browser",
+    check(len(body["commands"]) == 5, "five commands served to the browser",
           "got %d" % len(body["commands"]))
     check(body["raw_command"]["name"] == registry.RAW_COMMAND_NAME,
           "raw escape hatch advertised to the browser")
@@ -570,9 +582,9 @@ def test_live_server():
           "exactly one command advertises parameters", repr(with_params))
     if with_params:
         specs = {p["name"]: p for p in with_params[0]["params"]}
-        check(set(specs) == {"n", "m"}, "its parameters are n and m")
+        check(set(specs) == {"m"}, "its only parameter is m - n is hardcoded now")
         check(all(p["min"] == 0 and p["max"] == 255 for p in specs.values()),
-              "both parameters advertise the 0-255 byte range")
+              "m advertises the 0-255 byte range")
 
     with urllib.request.urlopen(base + "/api/status", timeout=3) as response:
         status = json.loads(response.read().decode("utf-8"))["status"]
@@ -673,7 +685,7 @@ def test_sse_stream():
 
 
 def test_registry_extensibility():
-    section("11. Adding an 8th command = one entry, no other edits")
+    section("11. Adding a 6th command = one entry, no other edits")
 
     import app as panel_app
 
@@ -695,8 +707,8 @@ def test_registry_extensibility():
         body = client.get("/api/commands").get_json()
         names = [c["name"] for c in body["commands"]]
 
-        check(len(body["commands"]) == 8,
-              "the API now advertises 8 commands with no route change",
+        check(len(body["commands"]) == 6,
+              "the API now advertises 6 commands with no route change",
               repr(names))
         added = [c for c in body["commands"] if c["name"] == "test_only_probe"]
         check(len(added) == 1, "the new entry is served to the browser")
@@ -729,7 +741,7 @@ def test_registry_extensibility():
         registry.COMMANDS.remove(eighth)
         del registry._BY_NAME[eighth.name]
 
-    check(len(registry.COMMANDS) == 7, "harness restored the registry to seven")
+    check(len(registry.COMMANDS) == 5, "harness restored the registry to five")
 
 
 # ---------------------------------------------------------------------------

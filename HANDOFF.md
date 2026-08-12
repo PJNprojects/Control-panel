@@ -23,9 +23,23 @@ Browser (this UI)  <-- SSE/HTTP -->  Flask on your PC  <-- USB serial, 115200 --
 
 ## 2. First run
 
-1. Double-click `Launch_ControlPanel.bat` inside this folder. First run creates a
-   private `.\venv\` and installs Flask + pyserial into it (needs internet once);
-   later runs skip straight to starting the server.
+1. Double-click `Launch_ControlPanel.bat` (Windows) or `Launch_ControlPanel.command`
+   (macOS) inside this folder. First run creates a private `venv` and installs
+   Flask + pyserial into it (needs internet once); later runs skip straight to
+   starting the server. On macOS, if double-clicking does nothing the first time,
+   see the note at the top of `Launch_ControlPanel.command` — it needs its
+   executable bit set once (`chmod +x Launch_ControlPanel.command`) and Gatekeeper
+   may ask you to confirm opening it.
+
+   **No Python on the Mac at all, or need it to run on a fully offline Mac?**
+   Use `Launch_ControlPanel_Portable.command` instead. First run downloads a
+   self-contained CPython build (matched to that Mac's own CPU, Apple Silicon
+   or Intel) into `./python-portable` and installs Flask/pyserial into it —
+   no Homebrew, no system Python, nothing outside this folder. Every run after
+   that is fully offline. To get it onto a Mac with no internet at all: run it
+   once on any Mac of the same CPU family that does have internet, then copy
+   the whole project folder (including the now-populated `python-portable`)
+   over by USB/AirDrop.
 2. It opens your browser at `http://127.0.0.1:5000/` automatically. If it doesn't,
    open that address yourself.
 3. **You do not need the gateway plugged in yet to reach this point.** The page loads
@@ -45,38 +59,102 @@ keeps doing whatever it was doing.
 ## 3. What you'll see
 
 - **Top bar** — port dropdown, Connect/Disconnect, a status dot.
-- **Command panel** — one button per registry entry (`SLEEP`, `WAKE`,
-  `READ RFID <n> <m>`, `READ RFID LOOP`, `STOP RFID LOOP`, `IMU RUN`, `IMU HALT`), plus
-  a free-text box for anything not (yet) a button.
+- **Commands + IMU Orientation** — one shared card. The command side has three
+  columns (RFID, POWER, IMU); POWER and IMU render as toggle controls, not plain
+  buttons — see section 4. Below the buttons, a free-text box for anything not
+  (yet) a button. Below that, the IMU dial/bars/charts from section 4b.
+- **RFID Scan History** — a table of resolved `READ RFID` attempts (manual button
+  presses and the auto-scan timer), each row a timestamp plus FOUND or NO TAG.
+  Has its own period/`m` controls (n is fixed at 1, see section 4) and a
+  "Download CSV" button.
+- **IMU Log** — same idea, periodic snapshots of yaw/pitch/roll/gravity/ax..gz
+  instead of scan verdicts. Own period control, own CSV download.
 - **Log panel** — every `#`-prefixed line from the gateway, scrolling: boot messages,
   the header line once, and a `# cmd: ... -> sent / FAILED (...) / unknown '...'` line
   for every command you send.
 - **Latest reading card** — the most recent 12-field telemetry record, decoded (accel
   in m/s², gyro in rad/s, not raw wire integers), not a scrolling history table. This
-  tool answers "what's happening right now," not "log everything to a file" — if you
-  need history, that's a separate, later feature (log panel included).
+  tool answers "what's happening right now," not "log everything to a file."
 
-## 4. The 7 commands
+Scan History and IMU Log ARE the "log everything to a file" feature the original
+version of this doc said didn't exist yet — with one caveat worth repeating: both
+live in the browser tab's memory only. No new Flask route, nothing written to disk.
+Closing the tab or reloading the page loses whatever hasn't been downloaded as CSV
+yet, and the auto-scan/auto-log timers pause the way any browser tab timer does
+when the tab is backgrounded for a long time. Download the CSV before you close the
+tab if the run mattered.
 
-| Button | What it does | Sent as | Collar-side effect |
+## 4. The commands
+
+Five of the gateway's seven ASCII commands have a control in this panel. Two —
+`READ RFID LOOP` and `STOP RFID LOOP` — were deliberately unbuttoned: continuous
+scanning didn't fit how this collar gets operated day to day, and the one-shot
+`READ RFID <m>` plus the Scan History auto-scan timer cover the same need with
+a result you can actually log. The gateway still accepts both; type them into the
+raw command box if you ever need them.
+
+**`n` is hardcoded to 1, not a control.** It used to be a second parameter
+(default 5 — stop early once 5 CRC-valid reads land), but that meant the FIRST
+fresh `rfid_id` after sending the command wasn't necessarily "the scan is done" —
+the collar could still be mid-attempt toward n=5 when this panel's one-shot
+timeout logic (see `commands.py`'s comment on `read_rfid_once`) had already
+decided the read was resolved, which produced misleading Scan History rows. n=1
+makes "one CRC-valid read landed" and "the command is done" the same event —
+`READ RFID <m>` sends `READ RFID 1 {m}` on the wire, always.
+
+**SLEEP / WAKE** is a slider switch, not two buttons. Right = WAKE (green), left =
+SLEEP (grey). **IMU** and the **READ RFID <m>** button's neighbors follow a
+press-and-stays-pressed pattern: press once to start, the button turns green and
+says what's now running (`IMU RUNNING`); press again to stop, it greys out and
+says what pressing it will do next (`Start IMU`).
+
+**None of these switches are a confirmed hardware state.** The gateway has no reply
+channel — `-> sent` is not `-> done` — so a switch shows the last thing YOU told the
+collar, not a read-back of what it's actually doing. If a send is rejected the
+switch snaps back on its own; if the collar silently ignores an accepted command for
+some other reason, the switch will show the wrong thing and the only real ground
+truth is still the telemetry (IMU columns leaving `-`, a tag ID appearing, etc).
+
+| Control | What it does | Sent as | Collar-side effect |
 |---|---|---|---|
-| `SLEEP` | Silences the link entirely — telemetry stops until `WAKE`. Whatever RFID/IMU mode was active underneath is preserved, not reset. | `SLEEP` | Overlay, not a mode change. |
-| `WAKE` | Resumes exactly what was running before `SLEEP` — you do not need to re-send `READ RFID LOOP` / `IMU RUN` after waking. | `WAKE` | — |
-| `READ RFID <n> <m>` | One-shot scan: stop early after `n` successful CRC-valid reads, or give up after `m` attempts (~70ms each). Reverts to whatever mode was active before. | `READ RFID {n} {m}` | Result shows up in the very next telemetry row's RFID fields — there's no separate "done" signal, watch the log/card. |
-| `READ RFID LOOP` | Start continuous scanning. | `READ RFID LOOP` | — |
-| `STOP RFID LOOP` | Stop continuous scanning. Fixed 3-word phrase — `STOP RFID` alone is rejected. | `STOP RFID LOOP` | — |
-| `IMU RUN` | Start populating accel/gyro fields (they read `-` until this is sent — this is the collar's default boot state). | `IMU RUN` | — |
-| `IMU HALT` | Stop populating IMU fields. Telemetry keeps flowing with `-` in those columns — only `SLEEP` stops the stream itself. Note: **HALT**, not STOP. | `IMU HALT` | — |
+| `SLEEP` / `WAKE` slider | Silences the link entirely (`SLEEP`) or resumes exactly what was running before (`WAKE`). Whatever RFID/IMU mode was active underneath `SLEEP` is preserved, not reset — you do not need to re-send `READ RFID LOOP` / `IMU RUN` after waking. | `SLEEP` / `WAKE` | `SLEEP` is an overlay, not a mode change. |
+| `READ RFID <m>` | One-shot scan: stops as soon as ONE CRC-valid read lands (`n` is fixed at 1), or gives up after `m` attempts (~70ms each). Reverts to whatever mode was active before. Disabled automatically while the collar's BLE link is mid disconnect/rescan/reconnect (see below). | `READ RFID 1 {m}` | Result shows up in the very next telemetry row's RFID fields — there's no separate "done" signal, watch the log/card/Scan History. |
+| `IMU` toggle (RUN / HALT) | Starts or stops populating accel/gyro fields (they read `-` until RUN is sent — HALT is the collar's default boot state). | `IMU RUN` / `IMU HALT` | Does NOT silence the link — packets keep flowing with `-` in the IMU columns under HALT. Only `SLEEP` stops the stream itself. |
 
 The panel validates `n`/`m` (0-255) before sending anything — an out-of-range value
 never reaches the serial port, you just get an error in the UI. Everything you type or
 click is echoed back in the log panel as the exact ASCII sent, so what you see there is
 literally what went out the USB cable.
 
-**On a freshly booted collar, nothing scans and no IMU flows until you send
-`READ RFID LOOP` (or a one-shot) and `IMU RUN`** — that's the collar's current default,
-not a bug in this panel. (Separately tracked: getting the collar to default to
-continuous scanning again is its own pending item, not something this tool controls.)
+**On a freshly booted collar, nothing scans and no IMU flows until you send a
+READ RFID (or the raw `READ RFID LOOP`) and `IMU RUN`** — that's the collar's
+current default, not a bug in this panel.
+
+### 4a. What happens when you press READ RFID
+
+The collar's BLE node disconnects, rescans for the implant, and reconnects — every
+time. In the log panel that looks like:
+
+```
+# cmd: READ RFID 5 20 -> sent
+# CattleNode disconnected - rescanning...
+# Scanning for CattleNode (service aa100000-...)...
+# Found service aa100000-... (name=CattleNode), connecting...
+# Connected. Discovering service...
+# Subscribed - waiting for CompactFusedPacket data...
+# cmd: command channel ready on aa100002-...
+```
+
+The command channel (and therefore any command, not just another RFID read) is
+gone for that couple-of-seconds window. This panel watches the log for exactly
+those two lines — `disconnected` and `command channel ready` — and disables the
+READ RFID button (and pauses the auto-scan timer for that cycle) in between, so
+you can't stack a second read into a channel that isn't there yet. A fresh
+telemetry record arriving is treated as an even more direct "we're back" signal.
+There's a 20s watchdog that force-re-enables the button if the "ready" line is ever
+missed or reworded on the gateway side, so a wording change over there can't wedge
+the button disabled forever — but it also means that specific string is worth
+keeping in sync between the two projects.
 
 ## 5. Reality check before you trust any of this
 

@@ -140,8 +140,10 @@ class ParamSpec:
 class Command:
     """One thing the operator can send.
 
-    `send` is a str.format template. For the six no-argument commands it has no
-    placeholders and formats to itself; the parameterised one has `{n}` / `{m}`.
+    `send` is a str.format template. For the four no-argument commands it has
+    no placeholders and formats to itself; the one parameterised command,
+    `read_rfid_once`, has `{m}` (its `n` is baked into the template text as a
+    literal `1`, not a placeholder - see the comment on that entry below).
     Keeping both cases in one field means `render()` has no special case.
     """
 
@@ -242,7 +244,10 @@ class Command:
 # ---------------------------------------------------------------------------
 #  THE REGISTRY
 #
-#  Seven entries, one per row of `ESP Gateway/HANDOFF.md` section 2's table.
+#  Five buttoned entries out of the gateway's seven-command grammar (section
+#  2 of `ESP Gateway/HANDOFF.md` still documents all seven - READ RFID LOOP
+#  and STOP RFID LOOP are deliberately unbuttoned here, see the comment
+#  above their spot in the list below).
 #  To add an eighth command: add a dict-equivalent Command(...) here. That is
 #  the whole change — the API and the UI pick it up automatically.
 #
@@ -293,24 +298,31 @@ COMMANDS: List[Command] = [
         toggle_default="on",
     ),
     Command(
+        # n is hardcoded to 1, not a parameter — changed 2026-08-10 at the
+        # operator's direction after bench testing: with n>1 (the old
+        # default was 5), the command doesn't stop until that many
+        # CRC-valid reads land, so the FIRST fresh rfid_id telemetry after
+        # sending it is NOT the same thing as "the scan is done" - the
+        # command can still be mid-flight, attempting more reads, when this
+        # panel's one-shot logic (which resolves on the first fresh read,
+        # see armRfidScan()/logScanResult() in app.js) already considered it
+        # finished. That mismatch is what produced misleading Scan History
+        # rows. n=1 makes "first fresh read" and "command done" the same
+        # event, which is what "one scan, one verified read" should mean
+        # anyway. m (the attempt cap, still a real parameter) is unaffected -
+        # a genuinely empty scan still runs its full attempt budget before
+        # this panel calls it a "no tag".
         name="read_rfid_once",
-        label="READ RFID <n> <m>",
-        send="READ RFID {n} {m}",
+        label="READ RFID <m>",
+        send="READ RFID 1 {m}",
         group="rfid",
         description=(
-            "One-shot scan: up to m capture attempts, stopping early once n "
-            "CRC-valid reads land. Reverts to whatever mode was active before. "
-            "At roughly 70 ms per attempt, m is a rough worst-case time bound."
+            "One-shot scan: stops as soon as ONE CRC-valid read lands (n is "
+            "fixed at 1), or gives up after m attempts. Reverts to whatever "
+            "mode was active before. At roughly 70 ms per attempt, m is a "
+            "rough worst-case time bound."
         ),
         params=[
-            ParamSpec(
-                name="n",
-                label="n - successful reads wanted",
-                minimum=0,
-                maximum=255,
-                default=5,
-                help="Stops early once this many CRC-valid reads land.",
-            ),
             ParamSpec(
                 name="m",
                 label="m - attempt cap",
@@ -322,35 +334,12 @@ COMMANDS: List[Command] = [
         ],
         rfid_scan_probe_param="m",
     ),
-    Command(
-        name="read_rfid_loop",
-        label="READ RFID LOOP",
-        send="READ RFID LOOP",
-        group="rfid",
-        description="Start continuous scanning.",
-        toggle_group="rfid_loop",
-        toggle_state="on",
-        toggle_style="press",
-        toggle_label="RFID LOOP",
-        toggle_default="off",   # collar does not scan by default
-        toggle_text="RFID SCANNING",
-    ),
-    Command(
-        name="stop_rfid_loop",
-        label="STOP RFID LOOP",
-        send="STOP RFID LOOP",
-        group="rfid",
-        description=(
-            "Stop continuous scanning. Fixed three-word phrase - 'STOP RFID' is "
-            "not a shorthand the gateway accepts."
-        ),
-        toggle_group="rfid_loop",
-        toggle_state="off",
-        toggle_style="press",
-        toggle_label="RFID LOOP",
-        toggle_default="off",
-        toggle_text="Start RFID Scan",
-    ),
+    # READ RFID LOOP / STOP RFID LOOP intentionally have no button (removed
+    # 2026-08-10 - continuous scanning didn't fit how this collar is
+    # actually operated: the one-shot READ RFID <n> <m> above, plus the
+    # auto-scan timer on the Scan History card, cover it with a result you
+    # can log. The gateway still accepts both commands - they're one line
+    # each in the raw command box below if you ever need them.
     Command(
         name="imu_run",
         label="IMU RUN",

@@ -52,9 +52,34 @@ Two properties of the link are worth internalising before changing anything:
 
 ### One click
 
-Double-click `Launch_ControlPanel.bat`. It creates `venv\` if missing,
-installs `requirements.txt` into it only when the imports are actually absent,
-starts the server, and opens your browser.
+Windows: double-click `Launch_ControlPanel.bat`. macOS: double-click
+`Launch_ControlPanel.command` (first time only, it may need
+`chmod +x Launch_ControlPanel.command` and a Gatekeeper "Open anyway"
+confirmation — see the comment block at the top of that file). Either one
+creates `venv` if missing, installs `requirements.txt` into it only when the
+imports are actually absent, starts the server, and opens your browser. Both
+scripts do the identical four steps; `backend/app.py` and `requirements.txt`
+are plain cross-platform Python, nothing OS-specific in either.
+
+### One click, zero Python required (macOS)
+
+`Launch_ControlPanel_Portable.command` skips the "is Python installed"
+question entirely. First run detects the Mac's CPU (Apple Silicon vs Intel)
+via `uname -m`, downloads the matching prebuilt CPython 3.12 from
+[astral-sh/python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+— a relocatable, self-contained interpreter, the macOS analogue of Windows'
+"embeddable" zip, since Apple doesn't publish an official equivalent — into
+`./python-portable/`, and installs Flask + pyserial into that copy. Every run
+after the first is fully offline; nothing is installed system-wide and no
+admin password is needed. `python-portable/` is gitignored (60-80MB of binary
+distribution) — each machine builds its own, or you copy a already-built one
+over by USB to a Mac with no internet at all, matching CPU family.
+
+A Windows equivalent of this (a bundled embeddable Python folder, so no
+system Python needed there either) does not exist yet — it's a reasonable
+follow-up if a Python-less Windows PC ever comes up, using the official
+embeddable zip from python.org the same way this one uses
+python-build-standalone.
 
 ### By hand
 
@@ -309,12 +334,24 @@ than silently mis-labelling a column.
   WSGI server the workers would fight over the COM port. Do not run this under
   gunicorn; it is a bench tool and the Flask dev server is the right size for
   it.
-- **No persistence.** No logging to disk, no session history, no replay. The
-  panel forgets everything on restart.
-- **No wall-clock time.** `timestamp` is milliseconds since the *gateway*
-  booted, because that is what the gateway sends. Log timestamps in the UI are
-  the PC's own receive time and are not the same clock.
-- **`READ RFID <n> <m>` has no completion signal.** Deliberate, and not fixable
-  here: the gateway never learns whether a one-shot scan succeeded. You read it
-  off the records. A real completion signal would have to be added to the
-  *node's* wire contract first.
+- **No server-side persistence.** Still true of the log panel and the telemetry
+  card - the panel forgets those on restart. It is NOT true of Scan History /
+  IMU Log (added since this note was first written): both keep a bounded
+  in-memory table with a CSV download, but that memory is the BROWSER TAB's,
+  not this process's or disk - closing the tab or reloading the page loses
+  whatever hasn't been downloaded yet. If that tradeoff stops being
+  acceptable (e.g. unattended multi-hour runs), the fix is a real backend
+  store, not a bigger in-tab array.
+- **No wall-clock time on the wire.** `timestamp` is milliseconds since the
+  *gateway* booted, because that is what the gateway sends. Log timestamps
+  and Scan History / IMU Log timestamps in the UI are the PC's own receive
+  time and are not the same clock.
+- **`READ RFID <m>` has no completion signal from the gateway.** Deliberate,
+  and not fixable here: the gateway never learns whether a one-shot scan
+  succeeded. (`n`, which used to be a second parameter, is hardcoded to 1 as
+  of 2026-08-10 - see the comment on `read_rfid_once` in `commands.py`.) The
+  panel now runs a client-side timeout, sized from `m` and the gateway's own
+  ~70ms-per-attempt figure, to make its best guess and log a "no tag" result
+  in Scan History - that is a UI-side heuristic, not a hardware ack, and it
+  is only as good as that ~70ms estimate. A real completion signal would
+  still have to be added to the *node's* wire contract first.

@@ -51,14 +51,37 @@ if not defined PY (
 
 set VENV_PY=%~dp0venv\Scripts\python.exe
 
-if not exist "%VENV_PY%" (
-    echo.
-    echo  [1/3] No virtual environment yet -- creating .\venv ...
+REM A venv's Scripts\python.exe is a small stub pinned to the exact base
+REM interpreter path recorded in venv\pyvenv.cfg at creation time -- it is
+REM NOT portable. If this whole project folder was copied (not freshly
+REM set up) from another Windows PC, that stub still exists as a file but
+REM points at a Python install that does not exist on THIS machine, and
+REM silently fails. Checking "does the file exist" alone (the old check)
+REM let that broken copy slip through and looked like "found" right up
+REM until the dependency check below failed in a way that reads as
+REM "can't find python.exe" -- checking that it actually RUNS catches
+REM that case and rebuilds instead of limping along on a dead venv.
+set VENV_OK=0
+if exist "%VENV_PY%" (
+    "%VENV_PY%" -c "import sys" >nul 2>nul
+    if not errorlevel 1 set VENV_OK=1
+)
+
+if "%VENV_OK%"=="0" (
+    if exist "%~dp0venv" (
+        echo.
+        echo  [1/3] .\venv exists but doesn't run -- likely copied from another
+        echo        machine. Removing it and creating a fresh one ...
+        rmdir /s /q "%~dp0venv"
+    ) else (
+        echo.
+        echo  [1/3] No virtual environment yet -- creating .\venv ...
+    )
     %PY% -m venv "%~dp0venv"
     if errorlevel 1 goto venvfail
 ) else (
     echo.
-    echo  [1/3] Virtual environment found.
+    echo  [1/3] Virtual environment found and working.
 )
 
 if not exist "%VENV_PY%" goto venvfail

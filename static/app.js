@@ -57,9 +57,81 @@
   var btnScanClear      = el("btn-scan-clear");
   var btnScanDownload   = el("btn-scan-download");
   var scanPeriodInput   = el("scan-period-input");
-  var scanNInput        = el("scan-n-input");
   var scanMInput        = el("scan-m-input");
   var btnScanAutoToggle = el("btn-scan-auto-toggle");
+
+  var imuLogBody         = el("imu-log-body");
+  imuLogBody.dataset.empty = "1";
+  var imuLogMeta          = el("imu-log-meta");
+  var btnImuLogClear      = el("btn-imu-log-clear");
+  var btnImuLogDownload   = el("btn-imu-log-download");
+  var imuLogPeriodInput   = el("imu-log-period-input");
+  var btnImuLogToggle     = el("btn-imu-log-toggle");
+
+  // ---------------------------------------------------------------------
+  //  BLE reconnect handling — the collar's node disconnects, rescans, and
+  //  reconnects for every READ RFID (log evidence: "# CattleNode
+  //  disconnected - rescanning..." through "# cmd: command channel ready on
+  //  aa100002-...", a couple of seconds end to end). The command channel is
+  //  gone for that whole window, so firing another READ RFID into it is
+  //  pointless at best. The READ RFID button (and the auto-scan timer) are
+  //  disabled between those two log lines.
+  //
+  //  rfidOnceButton is set later, when buildCommandControl() builds
+  //  whichever registry entry declares rfid_scan_probe_param - data-driven,
+  //  same as everywhere else, not a check for a command named "READ RFID".
+  // ---------------------------------------------------------------------
+  var BLE_DISCONNECT_MARKER  = /disconnected/i;
+  var BLE_READY_MARKER       = /command channel ready/i;
+  var BLE_RECONNECT_WATCHDOG_MS = 20000; // fail-safe if "ready" is ever missed/reworded
+
+  var bleReconnecting            = false;
+  var bleReconnectWatchdogId     = null;
+  var rfidOnceButton             = null;
+  var rfidOnceButtonDefaultText  = "";
+
+  // Two independent reasons the button can be unavailable: BLE mid-reconnect
+  // (see the block above), or a scan already pending (rfidScanPending(),
+  // defined below near armRfidScan()). Both block sending a second READ RFID
+  // into a state that can't cleanly resolve it - reconnect because the
+  // command channel isn't there yet, pending because a second arm would
+  // either overwrite or race the first scan's outcome. Declared here but
+  // called from both places since it needs to react to either changing.
+  function refreshRfidOnceAvailability() {
+    if (!rfidOnceButton) { return; }
+    var pending = rfidScanPending(); // function declaration below, hoisted - safe to call from here
+    rfidOnceButton.disabled = bleReconnecting || pending;
+    rfidOnceButton.textContent = bleReconnecting ? "Reconnecting…"
+      : pending ? "Scanning…"
+      : rfidOnceButtonDefaultText;
+  }
+
+  function setBleReconnecting(isReconnecting) {
+    if (bleReconnecting === isReconnecting) { return; }
+    bleReconnecting = isReconnecting;
+    refreshRfidOnceAvailability();
+
+    if (bleReconnectWatchdogId !== null) {
+      clearTimeout(bleReconnectWatchdogId);
+      bleReconnectWatchdogId = null;
+    }
+    if (isReconnecting) {
+      localNote("collar BLE reconnecting - READ RFID disabled until the command channel is back", "info");
+      bleReconnectWatchdogId = setTimeout(function () {
+        setBleReconnecting(false);
+        localNote("BLE reconnect watchdog timed out - re-enabling READ RFID as a fail-safe", "error");
+      }, BLE_RECONNECT_WATCHDOG_MS);
+    }
+  }
+
+  // Scans every '#' log line for the two markers. A normal telemetry record
+  // arriving is an independent, even more direct signal that the link is
+  // back - handled where the stream dispatches "telemetry" events.
+  function watchLogForBleState(text) {
+    if (!text) { return; }
+    if (BLE_DISCONNECT_MARKER.test(text)) { setBleReconnecting(true); }
+    else if (BLE_READY_MARKER.test(text)) { setBleReconnecting(false); }
+  }
 
   // Only the gyro axes get a bar-graph element now (see the OLED port note
   // above updateImu) — ax/ay/az still flow into imuHistory/imuSmoothed for
@@ -336,6 +408,16 @@
     button.className = command.danger ? "danger" : "primary";
     button.textContent = command.label;
     button.title = command.description || command.send;
+
+    // Data-driven hook, not a name check: whichever command declares
+    // rfid_scan_probe_param is the one BLE-reconnect handling below needs
+    // to disable, since it's the one that can trigger the collar's
+    // disconnect/rescan/reconnect cycle.
+    if (command.rfid_scan_probe_param) {
+      rfidOnceButton = button;
+      rfidOnceButtonDefaultText = command.label;
+      refreshRfidOnceAvailability();
+    }
 
     var inputs = {};
 
@@ -668,6 +750,15 @@
   // a slow fake ramp from zero.
   var imuSmoothed = { ax: null, ay: null, az: null, gx: null, gy: null, gz: null };
 
+  // Latest computed display values, kept for the IMU Log snapshot timer
+  // below (it samples "whatever's on screen right now", not a fresh
+  // computation) - same smoothed/sticky numbers the dial and bars show, so
+  // the log never disagrees with the widget above it.
+  var imuLatest = {
+    yaw: null, pitch: null, roll: null, gravity: null,
+    ax: null, ay: null, az: null, gx: null, gy: null, gz: null
+  };
+
   // Rolling history for the charts, same units as imuSmoothed. Carries the
   // last known value forward on a gap (IMU HALT) so the line visibly
   // flatlines instead of faking a drop to zero.
@@ -693,29 +784,71 @@
   // (README section 6), so this is a client-side timeout heuristic built
   // from the command's own parameters, not a hardware ack. It is disarmed
   // the instant a fresh tag shows up, and it only fires once per send.
+  //
+  // Card readout is a strict 3-state machine, no timers deciding what's on
+  // screen: SCANNING (a scan is armed and unresolved - rfidScanPending()),
+  // else the outcome of the LAST resolved scan, sticky until the NEXT one
+  // resolves - either the tag id (rfidLastResult="found") or "NO TAG FOUND"
+  // (rfidLastResult="none"). Changed 2026-08-10: this used to flash "NO TAG
+  // FOUND" for RFID_NO_TAG_FLASH_MS then silently revert to the old sticky
+  // tag id, which made every no-tag result after the first look identical
+  // to a real find once the flash passed - the operator couldn't tell a
+  // fresh empty scan from stale old data, or tell whether a scan was
+  // actually in flight at all. Sticky-until-overwritten plus an explicit
+  // SCANNING state removes both ambiguities.
   var RFID_ATTEMPT_MS        = 70;    // matches HANDOFF.md's "~70 ms each attempt"
   var RFID_TIMEOUT_BUFFER_MS = 400;   // slack for serial/BLE round trip + one telemetry period
   var RFID_STALE_MS          = 3000;  // no fresh read in this long -> shown as stale, not silently frozen
-  var RFID_NO_TAG_FLASH_MS   = 4000;  // how long "NO TAG FOUND" stays up after a one-shot times out
 
   var rfidLastId       = null;  // sticky - last tag actually seen this session
   var rfidLastTemp      = null; // sticky - its temperature reading
   var rfidLastSeenTs    = null; // wall-clock ms of the last fresh read
   var rfidOneShotDeadline = null; // wall-clock ms after which "no tag" fires, or null if not armed
-  var rfidNoTagFlashUntil = null; // wall-clock ms until which "NO TAG FOUND" stays displayed
+  var rfidLastResult      = null; // null (never resolved) | "found" | "none" - outcome of the last resolved scan, sticky
   var rfidPendingSource   = null; // "manual" | "auto" - who armed the current pending scan, for the history log
+
+  // One log row per scan, guaranteed two ways, not just one:
+  //  1. Only one scan is ever allowed to be pending at a time - armRfidScan()
+  //     below refuses to arm a second one on top of an unresolved first, and
+  //     every caller (manual button, auto-scan timer) checks
+  //     rfidScanPending() before sending anything, so overlap shouldn't be
+  //     possible in normal operation.
+  //  2. Belt and suspenders: each armed scan gets a unique id, and
+  //     logScanResult() below refuses to log the same id twice even if
+  //     something upstream of it somehow calls it more than once for one
+  //     scan. Given the fix was specifically asked for because a log looked
+  //     replicated, "shouldn't be possible" wasn't good enough on its own.
+  var rfidScanSeq          = 0;
+  var rfidPendingScanId    = null; // id of the currently-armed, unresolved scan
+  var rfidLastLoggedScanId = null; // id most recently written to history
+
+  function rfidScanPending() { return rfidOneShotDeadline !== null; }
 
   // Arms both the highlight card's "no tag found" flash AND a scan-history
   // row - one probe, one outcome, recorded in both places. `source` is
-  // which control fired the READ RFID <n> <m> (see the Scan History
-  // section below for where "manual" and "auto" come from).
+  // which control fired the READ RFID <m> (see the Scan History section
+  // below for where "manual" and "auto" come from).
   function armRfidScan(attempts, source) {
     if (!attempts || attempts <= 0) { return; }
-    rfidOneShotDeadline = Date.now() + attempts * RFID_ATTEMPT_MS + RFID_TIMEOUT_BUFFER_MS;
+    if (rfidScanPending()) {
+      // Every caller is supposed to check rfidScanPending() first (and the
+      // manual button / auto-scan timer are both disabled while pending),
+      // so reaching this should be unreachable - refusing beats silently
+      // overwriting a still-unresolved scan's deadline, which is exactly
+      // the kind of thing that produces a misattributed second log row.
+      localNote("a scan is already pending - not starting another", "error");
+      return;
+    }
+    rfidScanSeq += 1;
+    rfidPendingScanId = rfidScanSeq;
+    var armedAt = Date.now();
+    rfidOneShotDeadline = armedAt + attempts * RFID_ATTEMPT_MS + RFID_TIMEOUT_BUFFER_MS;
     rfidPendingSource = source;
+    refreshRfidOnceAvailability();
+    renderRfidCards(armedAt); // show SCANNING… immediately, don't wait for the 500ms tick
   }
 
-  var RFID_CARD_STATES = ["card-idle", "card-fresh", "card-stale", "card-warn"];
+  var RFID_CARD_STATES = ["card-idle", "card-fresh", "card-stale", "card-warn", "card-scanning"];
 
   function setCardState(card, state) {
     RFID_CARD_STATES.forEach(function (c) { card.classList.remove(c); });
@@ -726,34 +859,41 @@
     var oneShotTimedOut = rfidOneShotDeadline !== null && now >= rfidOneShotDeadline;
     if (oneShotTimedOut) {
       rfidOneShotDeadline = null;               // fires once
-      rfidNoTagFlashUntil = now + RFID_NO_TAG_FLASH_MS;
-      logScanResult(now, null, null, rfidPendingSource);
+      rfidLastResult = "none";                   // sticky until the NEXT scan resolves
+      logScanResult(now, null, null, rfidPendingSource, null, rfidPendingScanId);
       rfidPendingSource = null;
+      rfidPendingScanId = null;
+      refreshRfidOnceAvailability();
     }
 
     // One state drives both cards - temp and rfid_id come off the same tag
-    // read, so they go stale/fresh/idle together.
+    // read, so they go stale/fresh/idle/warn/scanning together. Order
+    // matters: a pending scan always wins the display, regardless of what
+    // the last resolved result was - "is it scanning right now" is the
+    // first question an operator standing at the collar actually has.
     var state;
 
-    if (rfidNoTagFlashUntil !== null && now < rfidNoTagFlashUntil) {
+    if (rfidScanPending()) {
+      state = "card-scanning";
+      imuRfidValue.textContent = "SCANNING…";
+      imuRfidValue.classList.remove("none", "stale", "warn");
+      imuRfidValue.classList.add("scanning");
+    } else if (rfidLastResult === "none") {
       state = "card-warn";
       imuRfidValue.textContent = "NO TAG FOUND";
-      imuRfidValue.classList.remove("none", "stale");
+      imuRfidValue.classList.remove("none", "stale", "scanning");
       imuRfidValue.classList.add("warn");
+    } else if (rfidLastId !== null) {
+      var isStale = (now - rfidLastSeenTs) >= RFID_STALE_MS;
+      state = isStale ? "card-stale" : "card-fresh";
+      imuRfidValue.textContent = rfidLastId;
+      imuRfidValue.classList.remove("none", "warn", "scanning");
+      imuRfidValue.classList.toggle("stale", isStale);
     } else {
-      rfidNoTagFlashUntil = null;
-      if (rfidLastId !== null) {
-        var isStale = (now - rfidLastSeenTs) >= RFID_STALE_MS;
-        state = isStale ? "card-stale" : "card-fresh";
-        imuRfidValue.textContent = rfidLastId;
-        imuRfidValue.classList.remove("none", "warn");
-        imuRfidValue.classList.toggle("stale", isStale);
-      } else {
-        state = "card-idle";
-        imuRfidValue.textContent = "-";
-        imuRfidValue.classList.remove("warn", "stale");
-        imuRfidValue.classList.add("none");
-      }
+      state = "card-idle";
+      imuRfidValue.textContent = "-";
+      imuRfidValue.classList.remove("warn", "stale", "scanning");
+      imuRfidValue.classList.add("none");
     }
     setCardState(imuRfidCard, state);
     setCardState(imuTempCard, state);
@@ -786,7 +926,15 @@
   var SCAN_HISTORY_MAX = 2000;
   var scanHistory = [];   // newest first
 
-  function logScanResult(now, tagId, temp, source, gwTs) {
+  function logScanResult(now, tagId, temp, source, gwTs, scanId) {
+    // Idempotent guard: if this scanId already produced a row, don't write a
+    // second one. scanId is optional (only the two armRfidScan()-driven
+    // resolution paths pass it) - null/undefined just skips the check, which
+    // is fine, that's not the case that was producing duplicates.
+    if (scanId !== null && scanId !== undefined && scanId === rfidLastLoggedScanId) {
+      return;
+    }
+    if (scanId !== null && scanId !== undefined) { rfidLastLoggedScanId = scanId; }
     var entry = {
       ts: now,
       tagId: tagId || null,
@@ -882,20 +1030,34 @@
     URL.revokeObjectURL(url);
   });
 
-  // --- Auto-scan: fires READ RFID {n} {m} on a timer and logs the result
+  // --- Auto-scan: fires READ RFID 1 {m} on a timer (n is hardcoded to 1 in
+  // the registry) and logs the result
   // through the exact same armRfidScan()/logScanResult() path as the
   // manual button, tagged source="auto" so the table shows which is which.
   var autoScanOn = false;
   var autoScanTimerId = null;
 
   function triggerAutoScan() {
-    var n = parseInt(scanNInput.value, 10);
-    var m = parseInt(scanMInput.value, 10);
-    if (isNaN(n) || isNaN(m)) {
-      localNote("auto-scan: n/m must be numbers", "error");
+    if (bleReconnecting) {
+      localNote("auto-scan: skipped this cycle - BLE still reconnecting", "info");
       return;
     }
-    sendCommand("read_rfid_once", { n: n, m: m }, null).then(function (ok) {
+    if (rfidScanPending()) {
+      // A manual press (or the previous auto tick, on a short period) is
+      // still unresolved. Firing another READ RFID on top of it is exactly
+      // the overlap that was producing duplicate/misattributed Scan History
+      // rows - skip this tick rather than stack a second arm on the first.
+      localNote("auto-scan: skipped this cycle - previous scan still pending", "info");
+      return;
+    }
+    // n is hardcoded to 1 in the registry now (commands.py) - not sent as a
+    // param at all, since read_rfid_once no longer declares one.
+    var m = parseInt(scanMInput.value, 10);
+    if (isNaN(m)) {
+      localNote("auto-scan: m must be a number", "error");
+      return;
+    }
+    sendCommand("read_rfid_once", { m: m }, null).then(function (ok) {
       if (ok) { armRfidScan(m, "auto"); }
     });
   }
@@ -921,6 +1083,154 @@
     } else {
       btnScanAutoToggle.textContent = "Start Auto-Scan";
       if (autoScanTimerId !== null) { clearTimeout(autoScanTimerId); autoScanTimerId = null; }
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  //  IMU log — captures ONE ROW PER TELEMETRY RECORD while running (called
+  //  from updateImu() below, at whatever rate the serial link actually
+  //  delivers - full resolution, nothing skipped or sampled), and
+  //  auto-saves on a timer: downloads the buffer as CSV, then clears it, so
+  //  a long run doesn't sit unsaved in a tab that could get closed by
+  //  accident. "Save Now" and stopping the log both trigger the same
+  //  save-and-clear on demand. Still browser-tab-only, for the same reason
+  //  as the RFID auto-scan above (no new backend surface) - see that
+  //  section's comment for the tradeoff that implies.
+  // ---------------------------------------------------------------------
+
+  // Fail-safe ceiling only, not the normal operating point: at one row per
+  // telemetry packet (~600ms) this would take ~3.5 hours to fill even if
+  // auto-save is somehow never triggered.
+  var IMU_LOG_MAX = 20000;
+  var imuLog = [];   // newest first
+  var imuLogOn = false;
+  var imuAutosaveTimerId = null;
+
+  function fmt(value, digits) {
+    return value === null || value === undefined ? "" : value.toFixed(digits);
+  }
+
+  // Called from updateImu() for every telemetry record while imuLogOn.
+  function captureImuLogRow(now) {
+    var entry = {
+      ts: now,
+      yaw: imuLatest.yaw, pitch: imuLatest.pitch, roll: imuLatest.roll, gravity: imuLatest.gravity,
+      ax: imuLatest.ax, ay: imuLatest.ay, az: imuLatest.az,
+      gx: imuLatest.gx, gy: imuLatest.gy, gz: imuLatest.gz,
+      temp: rfidLastTemp, rfidId: rfidLastId
+    };
+    imuLog.unshift(entry);
+    if (imuLog.length > IMU_LOG_MAX) { imuLog.length = IMU_LOG_MAX; }
+    prependImuLogRow(entry);
+    imuLogMeta.textContent = imuLog.length + " sample" + (imuLog.length === 1 ? "" : "s") + " buffered";
+  }
+
+  function prependImuLogRow(e) {
+    if (imuLogBody.dataset.empty === "1") {
+      imuLogBody.innerHTML = "";
+      delete imuLogBody.dataset.empty;
+    }
+    var row = document.createElement("tr");
+    var cells = [
+      new Date(e.ts).toLocaleTimeString(),
+      fmt(e.yaw, 1), fmt(e.pitch, 1), fmt(e.roll, 1), fmt(e.gravity, 2),
+      fmt(e.ax, 2), fmt(e.ay, 2), fmt(e.az, 2),
+      fmt(e.gx, 2), fmt(e.gy, 2), fmt(e.gz, 2),
+      e.temp !== null ? e.temp.toFixed(1) : "",
+      e.rfidId || ""
+    ];
+    cells.forEach(function (text) {
+      var td = document.createElement("td");
+      td.textContent = text === "" ? "-" : text;
+      row.appendChild(td);
+    });
+    imuLogBody.insertBefore(row, imuLogBody.firstChild);
+    while (imuLogBody.childElementCount > IMU_LOG_MAX) {
+      imuLogBody.removeChild(imuLogBody.lastChild);
+    }
+  }
+
+  function downloadImuLogCsv() {
+    var header = ["time_iso", "yaw_deg", "pitch_deg", "roll_deg", "gravity_ms2",
+      "ax_ms2", "ay_ms2", "az_ms2", "gx_rads", "gy_rads", "gz_rads",
+      "temperature_c", "rfid_id"];
+    var lines = [header.join(",")];
+    // Oldest-first in the file even though the buffer is newest-first.
+    for (var i = imuLog.length - 1; i >= 0; i--) {
+      var e = imuLog[i];
+      lines.push([
+        new Date(e.ts).toISOString(),
+        fmt(e.yaw, 2), fmt(e.pitch, 2), fmt(e.roll, 2), fmt(e.gravity, 3),
+        fmt(e.ax, 3), fmt(e.ay, 3), fmt(e.az, 3),
+        fmt(e.gx, 4), fmt(e.gy, 4), fmt(e.gz, 4),
+        e.temp !== null ? e.temp.toFixed(1) : "",
+        csvEscape(e.rfidId)
+      ].join(","));
+    }
+    var blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    var stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    a.href = url;
+    a.download = "imu_log_" + stamp + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function clearImuLogBuffer() {
+    imuLog = [];
+    imuLogBody.innerHTML = '<tr><td colspan="13" class="muted">No samples logged yet.</td></tr>';
+    imuLogBody.dataset.empty = "1";
+    imuLogMeta.textContent = "0 samples buffered";
+  }
+
+  // The one path both "Save Now", the auto-save timer, and stopping the log
+  // all go through - one file per chunk, buffer always empty right after.
+  function flushImuLog(reason) {
+    if (imuLog.length === 0) {
+      if (reason === "auto") { localNote("IMU log auto-save: nothing buffered, skipped", "info"); }
+      return;
+    }
+    var count = imuLog.length;
+    downloadImuLogCsv();
+    clearImuLogBuffer();
+    localNote("IMU log saved - " + count + " sample" + (count === 1 ? "" : "s") +
+      " (" + reason + ")", "info");
+  }
+
+  btnImuLogClear.addEventListener("click", function () {
+    // Discard, not save - matches the button's own tooltip. Different from
+    // flushImuLog() on purpose: this one does NOT download anything.
+    clearImuLogBuffer();
+  });
+
+  btnImuLogDownload.addEventListener("click", function () { flushImuLog("manual"); });
+
+  function scheduleNextImuAutosave() {
+    if (!imuLogOn) { return; }
+    var periodMin = Math.max(1, parseInt(imuLogPeriodInput.value, 10) || 5);
+    imuAutosaveTimerId = setTimeout(function () {
+      flushImuLog("auto");
+      scheduleNextImuAutosave();
+    }, periodMin * 60 * 1000);
+  }
+
+  btnImuLogToggle.addEventListener("click", function () {
+    imuLogOn = !imuLogOn;
+    btnImuLogToggle.classList.toggle("is-on", imuLogOn);
+    btnImuLogToggle.classList.toggle("is-off", !imuLogOn);
+    if (imuLogOn) {
+      var periodMin = Math.max(1, parseInt(imuLogPeriodInput.value, 10) || 5);
+      btnImuLogToggle.textContent = "IMU Log Running (auto-save every " + periodMin + "m)";
+      scheduleNextImuAutosave();
+      // Capture itself starts happening on the next updateImu() call, not
+      // here - it's driven by telemetry arriving, not by this timer.
+    } else {
+      btnImuLogToggle.textContent = "Start IMU Log";
+      if (imuAutosaveTimerId !== null) { clearTimeout(imuAutosaveTimerId); imuAutosaveTimerId = null; }
+      flushImuLog("stopped");   // don't lose whatever was captured since the last auto-save
     }
   });
 
@@ -956,6 +1266,7 @@
     imuYawGroup.setAttribute("transform", "rotate(" + imuYawDeg.toFixed(2) + " 110 110)");
     var displayYaw = ((imuYawDeg % 360) + 360) % 360;
     imuYawValue.textContent = displayYaw.toFixed(1) + "°";
+    imuLatest.yaw = displayYaw;
   }
 
   function setSignedBar(key, value, range) {
@@ -1021,6 +1332,9 @@
     var gyV = emaUpdate("gy", data.gy === null ? null : data.gy * 0.001);
     var gzV = emaUpdate("gz", data.gz === null ? null : data.gz * 0.001);
 
+    imuLatest.ax = axV; imuLatest.ay = ayV; imuLatest.az = azV;
+    imuLatest.gx = gxV; imuLatest.gy = gyV; imuLatest.gz = gzV;
+
     pushHistory("ax", axV); pushHistory("ay", ayV); pushHistory("az", azV);
     pushHistory("gx", gxV); pushHistory("gy", gyV); pushHistory("gz", gzV);
 
@@ -1084,7 +1398,14 @@
       var pct = clamp(magnitude / IMU_GRAVITY_MAX_MS2 * 100, 0, 100);
       gravityFill.style.height = pct + "%";
       gravityValue.textContent = magnitude.toFixed(2) + " m/s²";
+
+      imuLatest.pitch = relPitch;
+      imuLatest.roll = relRoll;
+      imuLatest.gravity = magnitude;
     } else {
+      imuLatest.pitch = null;
+      imuLatest.roll = null;
+      imuLatest.gravity = null;
       imuCrosshair.removeAttribute("transform");
       imuPitchValue.textContent = "-";
       imuRollValue.textContent = "-";
@@ -1102,17 +1423,25 @@
       rfidLastTemp = (data.temperature === null || data.temperature === undefined)
         ? rfidLastTemp : data.temperature;
       rfidLastSeenTs = now;
+      rfidLastResult = "found";
       // A fresh tag showed up while a scan was armed and pending -> that IS
       // the probe's result. Log it once, then disarm; a fresh tag arriving
       // with nothing pending (e.g. mid READ RFID LOOP) is just normal
       // telemetry and isn't logged - see the note on the panel above.
       if (rfidOneShotDeadline !== null) {
-        logScanResult(now, data.rfid_id, rfidLastTemp, rfidPendingSource, data.timestamp);
+        logScanResult(now, data.rfid_id, rfidLastTemp, rfidPendingSource, data.timestamp, rfidPendingScanId);
       }
       rfidOneShotDeadline = null;
       rfidPendingSource = null;
+      rfidPendingScanId = null;
+      refreshRfidOnceAvailability();
     }
     renderRfidCards(now);
+
+    // Full-resolution capture: one row per telemetry record, at whatever
+    // rate the serial link is actually delivering them - see the IMU log
+    // section above for why this isn't a periodic sample.
+    if (imuLogOn) { captureImuLogRow(now); }
   }
 
   btnImuReset.addEventListener("click", function () {
@@ -1136,8 +1465,12 @@
       try { event = JSON.parse(message.data); } catch (e) { return; }
 
       if (event.type === "telemetry") {
+        // A telemetry record arriving at all is direct proof the link is up
+        // - independent of and a bit more certain than matching log text.
+        if (bleReconnecting) { setBleReconnecting(false); }
         renderTelemetry(event.data);
       } else if (event.type === "log") {
+        watchLogForBleState(event.text);
         appendLog(event);
       } else if (event.type === "status") {
         applyStatus(event.status);

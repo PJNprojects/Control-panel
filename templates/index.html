@@ -41,8 +41,12 @@
 
 <main>
 
-  <!-- Built from /api/commands. Intentionally empty in the HTML. -->
-  <section class="panel" id="command-panel">
+  <!-- Commands + IMU Orientation share one card - two h2 sub-sections
+       separated by a dashed divider (same treatment the raw-command box
+       already used inside this panel), rather than two full bordered
+       cards stacked with a gap between them. -->
+  <section class="panel" id="command-imu-panel">
+    <!-- Built from /api/commands. Intentionally empty in the HTML. -->
     <h2>Commands</h2>
     <div id="commands" class="commands">
       <p class="muted">Loading command registry&hellip;</p>
@@ -59,9 +63,8 @@
       </div>
       <p class="muted small" id="raw-hint"></p>
     </div>
-  </section>
 
-  <section class="panel" id="imu-panel">
+    <div id="imu-panel" class="panel-subsection">
     <h2>IMU Orientation
       <span class="muted small" id="imu-meta">yaw is relative &amp; drifts &mdash; no magnetometer on the collar</span>
       <button id="btn-imu-reset" class="ghost small">Reset origin</button>
@@ -175,6 +178,7 @@
         </div>
       </div>
     </div>
+    </div>
   </section>
 
   <!-- Scan history: a log of discrete RFID READ attempts (the manual
@@ -197,16 +201,12 @@
         period (s)
         <input id="scan-period-input" type="number" min="2" max="3600" value="30">
       </label>
-      <label class="param" title="n - stop early once this many CRC-valid reads land (same as the READ RFID <n> <m> button above).">
-        n
-        <input id="scan-n-input" type="number" min="0" max="255" value="5">
-      </label>
-      <label class="param" title="m - attempt cap per scheduled scan, ~70ms each.">
+      <label class="param" title="m - attempt cap per scheduled scan, ~70ms each. n is fixed at 1 (stop as soon as one CRC-valid read lands), same as the READ RFID <m> button above.">
         m
         <input id="scan-m-input" type="number" min="0" max="255" value="20">
       </label>
       <button id="btn-scan-auto-toggle" class="press-toggle scan-auto-toggle"
-              title="Fires a READ RFID {n} {m} on the period above and logs the result, found or not. Runs in THIS browser tab only - it stops if the tab is closed, and browsers slow down timers in a backgrounded tab, so this is a bench-side convenience, not a walk-away scheduler.">
+              title="Fires a READ RFID 1 {m} on the period above and logs the result, found or not. Runs in THIS browser tab only - it stops if the tab is closed, and browsers slow down timers in a backgrounded tab, so this is a bench-side convenience, not a walk-away scheduler.">
         Start Auto-Scan
       </button>
     </div>
@@ -218,6 +218,46 @@
         </thead>
         <tbody id="scan-history-body">
           <tr><td colspan="6" class="muted">No scans logged yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- IMU log: captures ONE ROW PER TELEMETRY RECORD while running - full
+       serial resolution, not a periodic sample - then auto-saves (downloads
+       the CSV + clears the buffer) on the interval below, so a long run
+       doesn't sit unsaved in a tab that could be closed by accident.
+       "Download CSV" / stopping the log do the same save-and-clear on
+       demand. Still browser-tab-only - see the tooltip on the toggle. -->
+  <section class="panel" id="imu-log-panel">
+    <h2>IMU Log
+      <span class="muted small" id="imu-log-meta">0 samples buffered</span>
+      <button id="btn-imu-log-clear" class="ghost small" title="Discard the buffered samples WITHOUT saving them.">Clear</button>
+      <button id="btn-imu-log-download" class="ghost small" title="Save now: downloads the buffered samples as CSV and clears the buffer.">Save Now (CSV)</button>
+    </h2>
+
+    <div class="scan-controls">
+      <label class="param" title="While running, the buffer is auto-saved (CSV downloaded, then cleared) on this interval.">
+        auto-save every (min)
+        <input id="imu-log-period-input" type="number" min="1" max="120" value="5">
+      </label>
+      <button id="btn-imu-log-toggle" class="press-toggle scan-auto-toggle"
+              title="Logs EVERY telemetry record - full serial resolution, nothing skipped - and auto-saves the buffer on the interval above. Stopping also saves whatever's left. Runs in THIS browser tab only - it stops if the tab is closed.">
+        Start IMU Log
+      </button>
+    </div>
+
+    <div class="scan-table-wrap">
+      <table class="scan-table">
+        <thead>
+          <tr>
+            <th>Time</th><th>Yaw</th><th>Pitch</th><th>Roll</th><th>|g|</th>
+            <th>ax</th><th>ay</th><th>az</th><th>gx</th><th>gy</th><th>gz</th>
+            <th>Temp</th><th>RFID ID</th>
+          </tr>
+        </thead>
+        <tbody id="imu-log-body">
+          <tr><td colspan="13" class="muted">No samples logged yet.</td></tr>
         </tbody>
       </table>
     </div>

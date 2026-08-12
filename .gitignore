@@ -1,6 +1,11 @@
-# Python virtual environment created by Launch_ControlPanel.bat
+# Python virtual environment created by Launch_ControlPanel.bat / .command
 venv/
 .venv/
+
+# Self-contained portable Python interpreter downloaded by
+# Launch_ControlPanel_Portable.command on macOS - 60-80MB binary distribution,
+# does not belong in git; each machine builds (or copies) its own copy.
+python-portable/
 
 # Bytecode
 __pycache__/

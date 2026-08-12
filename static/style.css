@@ -246,6 +246,11 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 
 /* ---- IMU orientation widget ---- */
 
+/* Commands + IMU Orientation share one .panel card now; this is the
+   divider between the two h2 sub-sections, same treatment as .raw already
+   used to separate the raw-command box from the button grid above it. */
+.panel-subsection { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 14px; }
+
 #imu-panel h2 { justify-content: flex-start; }
 #imu-panel #btn-imu-reset { margin-left: auto; }
 
@@ -420,19 +425,29 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .highlight-value.none { color: #5c6675; font-weight: 400; }
 .highlight-value.stale { color: var(--warn); }
 .highlight-value.warn  { color: var(--warn); }
+.highlight-value.scanning { color: var(--accent); animation: rfid-scanning-pulse 1s ease-in-out infinite; }
 .highlight-unit { font-size: 10px; color: var(--muted); margin-top: 2px; }
 
 /* Card accent (the left edge) carries the same state as the value text, so
    it reads at a glance without having to read the number: blue = nothing
    seen yet this session, green = a fresh read just landed, amber = seen
-   before but gone quiet a while / a one-shot scan came up empty. This is
-   the "so we can see the change" bit - the color itself changes on the
-   events that matter instead of everything staying visually identical
-   whether a tag was just found or nothing has happened all session. */
-.highlight-card.card-idle  { border-left-color: var(--accent); }
-.highlight-card.card-fresh { border-left-color: var(--ok); transition: border-left-color .2s ease-out; }
-.highlight-card.card-stale { border-left-color: var(--warn); }
-.highlight-card.card-warn  { border-left-color: var(--warn); }
+   before but gone quiet a while / a one-shot scan came up empty, pulsing
+   blue = a scan is in flight right now. This is the "so we can see the
+   change" bit - the color itself changes on the events that matter instead
+   of everything staying visually identical whether a tag was just found or
+   nothing has happened all session. No box-shadow anywhere in this state
+   set, by the same "no shadows" rule as the toggle buttons - the pulse is
+   an opacity animation, not a glow. */
+.highlight-card.card-idle     { border-left-color: var(--accent); }
+.highlight-card.card-fresh    { border-left-color: var(--ok); transition: border-left-color .2s ease-out; }
+.highlight-card.card-stale    { border-left-color: var(--warn); }
+.highlight-card.card-warn     { border-left-color: var(--warn); }
+.highlight-card.card-scanning { border-left-color: var(--accent); animation: rfid-scanning-pulse 1s ease-in-out infinite; }
+
+@keyframes rfid-scanning-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .45; }
+}
 
 /* ---- IMU rolling time graphs ---- */
 
