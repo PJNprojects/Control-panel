@@ -68,6 +68,16 @@
   var imuLogPeriodInput   = el("imu-log-period-input");
   var btnImuLogToggle     = el("btn-imu-log-toggle");
 
+  var presenceCard        = el("presence-card");
+  var presenceStateValue  = el("presence-state");
+  var presenceIdValue     = el("presence-id");
+  var presenceMeta        = el("presence-meta");
+  var presenceCountNew    = el("presence-count-new");
+  var presenceCountRepeat = el("presence-count-repeat");
+  var presenceCountEmpty  = el("presence-count-empty");
+  var presenceLongestRun  = el("presence-longest-run");
+  var btnPresenceReset    = el("btn-presence-reset");
+
   // ---------------------------------------------------------------------
   //  BLE reconnect handling — the collar's node disconnects, rescans, and
   //  reconnects for every READ RFID (log evidence: "# CattleNode
@@ -121,6 +131,24 @@
         setBleReconnecting(false);
         localNote("BLE reconnect watchdog timed out - re-enabling READ RFID as a fail-safe", "error");
       }, BLE_RECONNECT_WATCHDOG_MS);
+    } else {
+      // The link just settled. A scan whose attempt-timeout already elapsed
+      // may have been held back waiting for exactly this (see the
+      // bleReconnecting gate in renderRfidCards()) - resolve it now instead
+      // of letting it sit until the next 500ms poll tick. Latency only: the
+      // poll would have caught it anyway, which is what keeps a held scan
+      // from ever hanging if this nudge is ever missed.
+      //
+      // Deferred by a tick ON PURPOSE. One of the callers of
+      // setBleReconnecting(false) is the telemetry branch of the stream
+      // handler, which fires BEFORE that same record is parsed - and that
+      // record may be the one carrying the tag. Resolving synchronously
+      // there would log NO TAG a few lines before updateImu() got to see
+      // the tag that was right there, which is precisely the misverdict
+      // this whole change is meant to remove. Letting the current record
+      // finish first means the FOUND path gets first refusal, and this
+      // then finds nothing pending.
+      setTimeout(function () { renderRfidCards(Date.now()); }, 0);
     }
   }
 
@@ -623,6 +651,7 @@
     { key: "gz",            label: "gz",         unit: "mrad/s", scale: 0.001, scaled: "rad/s" },
     { key: "temperature",   label: "temp",       unit: "°C implant" },
     { key: "rfid_id",       label: "rfid_id",    unit: "FDX-B tag" },
+    { key: "rfid_valid",    label: "rfid valid", unit: "1 = confirmed" },
     { key: "ble_connected", label: "ble link",   unit: "1 = up" },
     { key: "age_ms",        label: "age",        unit: "ms since packet" }
   ];
@@ -764,48 +793,72 @@
   // flatlines instead of faking a drop to zero.
   var imuHistory = { ax: [], ay: [], az: [], gx: [], gy: [], gz: [] };
 
-  // --- temp / RFID: sticky last-known reading + a best-effort "no tag
-  // found" call-out ---------------------------------------------------
+  // --- temp / RFID: raw mirror + a scan-scoped held result --------------
   //
-  // The wire's rfid_id field is per-RECORD freshness, not a persistent
-  // value (see telemetry_parser.py): most records read '-' simply because
-  // no *new* scan landed in that particular ~600ms BLE cycle, not because
-  // scanning failed. Blanking the card to '-' every time that happens would
-  // make it flicker constantly during a perfectly normal READ RFID LOOP and
-  // wouldn't tell you anything. So instead: hang onto the last tag actually
-  // seen and its temperature, and only change the DISPLAYED state on real
-  // events - a fresh read (green), going quiet for a while (amber/stale,
-  // still showing the last tag so you don't lose it), or, for the one-shot
-  // READ RFID <n> <m> button specifically, an explicit "NO TAG FOUND" if no
-  // fresh read shows up within roughly n*m's attempt budget.
+  // TWO DIFFERENT CONCEPTS LIVE HERE. Keeping them apart is the whole
+  // design, because collapsing them is exactly what produced the bug this
+  // panel spent several rounds chasing.
   //
-  // That one-shot case is the ONLY place this panel has real grounds to
-  // call something "failed" - the gateway has no completion signal for it
-  // (README section 6), so this is a client-side timeout heuristic built
-  // from the command's own parameters, not a hardware ack. It is disarmed
-  // the instant a fresh tag shows up, and it only fires once per send.
+  //   rfidCurrentId / rfidCurrentTemp  = "what does the wire say RIGHT NOW"
+  //     Pure pass-through, zero memory: overwritten from every telemetry
+  //     record, set to null the moment a record carries '-'. Nothing is
+  //     carried forward, ever. This is the same policy pitch/roll/gravity
+  //     use right above. Other consumers (the IMU log's per-record capture)
+  //     legitimately want this raw view and read these directly.
   //
-  // Card readout is a strict 3-state machine, no timers deciding what's on
-  // screen: SCANNING (a scan is armed and unresolved - rfidScanPending()),
-  // else the outcome of the LAST resolved scan, sticky until the NEXT one
-  // resolves - either the tag id (rfidLastResult="found") or "NO TAG FOUND"
-  // (rfidLastResult="none"). Changed 2026-08-10: this used to flash "NO TAG
-  // FOUND" for RFID_NO_TAG_FLASH_MS then silently revert to the old sticky
-  // tag id, which made every no-tag result after the first look identical
-  // to a real find once the flash passed - the operator couldn't tell a
-  // fresh empty scan from stale old data, or tell whether a scan was
-  // actually in flight at all. Sticky-until-overwritten plus an explicit
-  // SCANNING state removes both ambiguities.
+  //   rfidHeldResult                   = "how did the LAST SCAN come out"
+  //     Written only when a scan resolves, cleared only when the next scan
+  //     arms. This is not cached sensor data - it is a verdict, and a
+  //     verdict is a thing that stays true until it is replaced.
+  //
+  // WHY THIS IS NOT A REVERT TO THE OLD STICKY CARD (2026-08-13)
+  // On 2026-08-10 the operator killed every form of persistence here, and
+  // was right to: at that point the panel had no way to tell "genuinely no
+  // tag" from "a value the PC is repeating at you", so anything that
+  // lingered on screen was indistinguishable from the bug. Two things
+  // changed since:
+  //
+  //   1. Gateway V1.3.5 ships `rfid_valid` - an explicit per-record flag
+  //      set by the collar's own 5-reads-in-2s confirmation logic. The
+  //      panel no longer infers a verdict by string-comparing against '-';
+  //      it is told one. (PROTOCOL_V10.md section 2.3 recommends exactly
+  //      this.) That same firmware release also fixed the real upstream
+  //      cause of the old stickiness: pre-V1.3.5, rfid_id/temperature were
+  //      never reset once a tag was seen. Part of what was being chased
+  //      from this side was never a PC-side cache at all.
+  //   2. The operator asked for the verdict back, scoped: "so no tag can be
+  //      easily detected now" - i.e. glance at the card at ANY time after a
+  //      scan and see how that scan came out, not just in the instant it
+  //      resolved.
+  //
+  // So the held result deliberately does NOT clear when an ordinary
+  // rfid_valid=0 record arrives outside a scan. Outside a scan nothing is
+  // reading, so those records say nothing about the last scan's outcome,
+  // and letting them blank the card would defeat the entire point. The
+  // holding is bounded and legible: it lasts exactly until the next scan
+  // arms, which blanks it back to SCANNING… immediately. That is what
+  // makes this different from the old sticky-forever card, which had no
+  // event that ever cleared it.
   var RFID_ATTEMPT_MS        = 70;    // matches HANDOFF.md's "~70 ms each attempt"
   var RFID_TIMEOUT_BUFFER_MS = 400;   // slack for serial/BLE round trip + one telemetry period
-  var RFID_STALE_MS          = 3000;  // no fresh read in this long -> shown as stale, not silently frozen
 
-  var rfidLastId       = null;  // sticky - last tag actually seen this session
-  var rfidLastTemp      = null; // sticky - its temperature reading
-  var rfidLastSeenTs    = null; // wall-clock ms of the last fresh read
+  var rfidCurrentId    = null; // exactly the most recent record's rfid_id, or null - not sticky
+  var rfidCurrentTemp  = null; // exactly the most recent record's temperature, or null - not sticky
+  var rfidCurrentValid = false; // exactly the most recent record's rfid_valid flag - not sticky
+
+  // The last resolved scan's verdict, or null if no scan has run yet this
+  // session (the never-scanned idle state, which renders as '-'). Shape:
+  //   { found: true,  id: "985141001320293", temp: 38.5, at: <ms> }
+  //   { found: false, id: null,              temp: null, at: <ms> }
+  var rfidHeldResult = null;
   var rfidOneShotDeadline = null; // wall-clock ms after which "no tag" fires, or null if not armed
-  var rfidLastResult      = null; // null (never resolved) | "found" | "none" - outcome of the last resolved scan, sticky
   var rfidPendingSource   = null; // "manual" | "auto" - who armed the current pending scan, for the history log
+
+  // The attempt-timeout has elapsed but the collar's BLE link is still
+  // mid-reconnect, so the scan is deliberately NOT resolved yet - see the
+  // gate in renderRfidCards() for why. Display flag + the reason the card
+  // says "WAITING LINK…" instead of "SCANNING…".
+  var rfidResolveHeldForLink = false;
 
   // One log row per scan, guaranteed two ways, not just one:
   //  1. Only one scan is ever allowed to be pending at a time - armRfidScan()
@@ -844,11 +897,16 @@
     var armedAt = Date.now();
     rfidOneShotDeadline = armedAt + attempts * RFID_ATTEMPT_MS + RFID_TIMEOUT_BUFFER_MS;
     rfidPendingSource = source;
+    rfidResolveHeldForLink = false;
+    // The ONLY thing that clears a held verdict. A new scan is starting, so
+    // the previous scan's outcome stops being the answer to "what is on the
+    // reader" and the card must not keep showing it while the new one runs.
+    rfidHeldResult = null;
     refreshRfidOnceAvailability();
     renderRfidCards(armedAt); // show SCANNING… immediately, don't wait for the 500ms tick
   }
 
-  var RFID_CARD_STATES = ["card-idle", "card-fresh", "card-stale", "card-warn", "card-scanning"];
+  var RFID_CARD_STATES = ["card-idle", "card-fresh", "card-scanning", "card-no-tag"];
 
   function setCardState(card, state) {
     RFID_CARD_STATES.forEach(function (c) { card.classList.remove(c); });
@@ -858,53 +916,103 @@
   function renderRfidCards(now) {
     var oneShotTimedOut = rfidOneShotDeadline !== null && now >= rfidOneShotDeadline;
     if (oneShotTimedOut) {
-      rfidOneShotDeadline = null;               // fires once
-      rfidLastResult = "none";                   // sticky until the NEXT scan resolves
-      logScanResult(now, null, null, rfidPendingSource, null, rfidPendingScanId);
-      rfidPendingSource = null;
-      rfidPendingScanId = null;
-      refreshRfidOnceAvailability();
+      // "Timed out" is necessary but NOT sufficient to call it "no tag".
+      // rfidOneShotDeadline is a pure wall-clock budget started the instant
+      // the command was POSTed, and pressing READ RFID also kicks the
+      // collar's BLE link into disconnect/rescan/reconnect (a couple of
+      // seconds). With a small m the budget can therefore expire while the
+      // command channel is still coming back up - i.e. before the collar
+      // has had any real chance to attempt a read - and logging "NO TAG"
+      // there records a verdict about the link, not about the tag. So hold
+      // the scan pending until the link has actually settled.
+      //
+      // This cannot hang: bleReconnecting is driven false by the "command
+      // channel ready" log line, by any telemetry record arriving, or -
+      // worst case, if both of those are missed - by the 20s watchdog in
+      // setBleReconnecting(). Once it flips, this same branch resolves on
+      // the next call, and there are two callers guaranteeing one: the
+      // nudge from setBleReconnecting(false) and the 500ms poll at the
+      // bottom of this file. Bound on a held scan is therefore the
+      // attempt budget + at most ~20s.
+      if (bleReconnecting) {
+        rfidResolveHeldForLink = true;
+      } else {
+        rfidResolveHeldForLink = false;
+        rfidOneShotDeadline = null;               // fires once
+        // The scan resolved as "no tag". Two records of that, deliberately:
+        // Scan History keeps the permanent, timestamped, downloadable one,
+        // and the held result keeps the at-a-glance one on the card until
+        // the next scan replaces it.
+        rfidHeldResult = { found: false, id: null, temp: null, at: now };
+        logScanResult(now, null, null, rfidPendingSource, null, rfidPendingScanId);
+        rfidPendingSource = null;
+        rfidPendingScanId = null;
+        refreshRfidOnceAvailability();
+      }
     }
 
     // One state drives both cards - temp and rfid_id come off the same tag
-    // read, so they go stale/fresh/idle/warn/scanning together. Order
-    // matters: a pending scan always wins the display, regardless of what
-    // the last resolved result was - "is it scanning right now" is the
-    // first question an operator standing at the collar actually has.
+    // read, so they change together. Three states, in strict priority
+    // order, and the order is the requirement:
+    //
+    //   1. a scan is running now          -> SCANNING… / WAITING LINK…
+    //   2. a scan has run and resolved    -> that verdict, held
+    //   3. no scan has ever run           -> '-'
+    //
+    // Note what is NOT in that list: the current telemetry record. The card
+    // is intentionally not a live mirror of the wire anymore (see the long
+    // comment on rfidHeldResult above) - it answers "how did the last scan
+    // come out", and an ordinary rfid_valid=0 record arriving while nothing
+    // is scanning is not an answer to that question. The raw per-record
+    // view still exists in two places for anyone who wants it: the Tag
+    // Presence Detector panel and the latest-reading card's rfid_id /
+    // rfid_valid cells.
     var state;
 
     if (rfidScanPending()) {
       state = "card-scanning";
-      imuRfidValue.textContent = "SCANNING…";
-      imuRfidValue.classList.remove("none", "stale", "warn");
+      // Same pending state either way - the sub-label just tells the
+      // operator WHY it's still spinning, so a long wait reads as "the
+      // link hasn't come back yet", not "the panel is stuck".
+      imuRfidValue.textContent = rfidResolveHeldForLink ? "WAITING LINK…" : "SCANNING…";
+      imuRfidValue.classList.remove("none");
       imuRfidValue.classList.add("scanning");
-    } else if (rfidLastResult === "none") {
-      state = "card-warn";
-      imuRfidValue.textContent = "NO TAG FOUND";
-      imuRfidValue.classList.remove("none", "stale", "scanning");
-      imuRfidValue.classList.add("warn");
-    } else if (rfidLastId !== null) {
-      var isStale = (now - rfidLastSeenTs) >= RFID_STALE_MS;
-      state = isStale ? "card-stale" : "card-fresh";
-      imuRfidValue.textContent = rfidLastId;
-      imuRfidValue.classList.remove("none", "warn", "scanning");
-      imuRfidValue.classList.toggle("stale", isStale);
+    } else if (rfidHeldResult !== null && rfidHeldResult.found) {
+      state = "card-fresh";
+      imuRfidValue.textContent = rfidHeldResult.id;
+      imuRfidValue.classList.remove("none", "scanning");
+    } else if (rfidHeldResult !== null) {
+      // Resolved, and the answer was "nothing there". Amber (--warn), not
+      // red: a scan that finds no tag is a perfectly normal outcome, not a
+      // fault - same reasoning as the NO TAG rows in Scan History, which
+      // already use --warn, so the two readouts agree on colour. Distinct
+      // from the grey '-' of state 3 on purpose: "we looked and there was
+      // nothing" and "we have not looked yet" are different facts and the
+      // operator asked to be able to tell them apart at a glance.
+      state = "card-no-tag";
+      imuRfidValue.textContent = "NO TAG";
+      imuRfidValue.classList.remove("none", "scanning");
     } else {
       state = "card-idle";
       imuRfidValue.textContent = "-";
-      imuRfidValue.classList.remove("warn", "stale", "scanning");
+      imuRfidValue.classList.remove("scanning");
       imuRfidValue.classList.add("none");
     }
     setCardState(imuRfidCard, state);
     setCardState(imuTempCard, state);
 
-    if (rfidLastTemp !== null) {
-      imuTempValue.textContent = rfidLastTemp.toFixed(1) + "°C";
+    // Temp card doesn't repeat "SCANNING…" in text - the shared border
+    // pulse (setCardState above) and the RFID card's own label already
+    // say that; this cell just goes blank until there's a real reading.
+    // It follows the held result for the same reason the id does: the
+    // temperature came off the same tag read, so it is part of the same
+    // verdict and has to be held or dropped with it, never separately.
+    if (!rfidScanPending() && rfidHeldResult !== null
+        && rfidHeldResult.temp !== null && rfidHeldResult.temp !== undefined) {
+      imuTempValue.textContent = rfidHeldResult.temp.toFixed(1) + "°C";
       imuTempValue.classList.remove("none");
-      imuTempValue.classList.toggle("stale", state === "card-stale");
     } else {
       imuTempValue.textContent = "-";
-      imuTempValue.classList.remove("stale");
       imuTempValue.classList.add("none");
     }
   }
@@ -1087,6 +1195,107 @@
   });
 
   // ---------------------------------------------------------------------
+  //  Tag Presence Detector — a read-only window onto the RAW rfid_id field.
+  //
+  //  Why this exists, separately from everything above: the panels above are
+  //  all organised around a SCAN (a discrete READ RFID, one verdict). This
+  //  one ignores scans entirely and just classifies what the wire itself is
+  //  carrying, record by record, so "is the PC repeating a value?" and "is
+  //  the gateway/node repeating a value?" stop looking the same on screen.
+  //  The PC side is already known not to cache (see the pass-through block
+  //  above); if a tag id keeps arriving on consecutive records with nothing
+  //  in front of the reader, this module makes that visible as a REPEAT run
+  //  and the answer is upstream of this panel.
+  //
+  //  IMPORTANT, and the reason presenceDetectorLastId is named nothing like
+  //  rfidCurrentId: this module DOES keep one value from the previous
+  //  record, because comparing consecutive records is the entire job. That
+  //  is detector-internal state, not a display cache. It never feeds the
+  //  RFID/temp highlight cards, never feeds Scan History, never feeds the
+  //  IMU Log - it is written and read only inside this section, and those
+  //  displays stay exactly as pass-through as they were. Nothing here calls
+  //  logScanResult() or touches rfidCurrentId/rfidCurrentTemp.
+  // ---------------------------------------------------------------------
+
+  var presenceDetectorLastId = null;  // last NON-NULL raw rfid_id seen, comparison only
+  var presenceRunLength      = 0;     // how many records in a row have carried that id
+  var presenceLongestRunSeen = 0;
+  var presenceRecords        = 0;
+  var presenceTotals         = { empty: 0, fresh: 0, repeat: 0 };
+
+  var PRESENCE_CARD_STATES = ["presence-idle", "presence-empty", "presence-new", "presence-repeat"];
+
+  function setPresenceCardState(state) {
+    PRESENCE_CARD_STATES.forEach(function (c) { presenceCard.classList.remove(c); });
+    presenceCard.classList.add(state);
+  }
+
+  // Called once per telemetry record, with THIS record's raw rfid_id exactly
+  // as it came off the wire (null = the '-' sentinel).
+  function updateTagPresence(rawId) {
+    var present = rawId !== null && rawId !== undefined;
+    var state;
+
+    if (!present) {
+      // An empty record says nothing about what the last real id was, so it
+      // neither clears presenceDetectorLastId nor breaks a run - the REPEAT
+      // test is defined against "the immediately preceding record that had
+      // a value", and the run count is kept consistent with that same rule.
+      state = "empty";
+      presenceTotals.empty += 1;
+    } else if (presenceDetectorLastId !== null && rawId === presenceDetectorLastId) {
+      state = "repeat";
+      presenceRunLength += 1;
+      presenceTotals.repeat += 1;
+    } else {
+      state = "new";
+      presenceDetectorLastId = rawId;
+      presenceRunLength = 1;
+      presenceTotals.fresh += 1;
+    }
+
+    if (presenceRunLength > presenceLongestRunSeen) { presenceLongestRunSeen = presenceRunLength; }
+    presenceRecords += 1;
+
+    if (state === "empty") {
+      setPresenceCardState("presence-empty");
+      presenceStateValue.textContent = "EMPTY";
+      presenceIdValue.textContent = "no reading in this record (‘-’ sentinel)";
+    } else if (state === "repeat") {
+      setPresenceCardState("presence-repeat");
+      presenceStateValue.textContent = "REPEAT ×" + presenceRunLength;
+      presenceIdValue.textContent = rawId + " — same id " + presenceRunLength + " records in a row";
+    } else {
+      setPresenceCardState("presence-new");
+      presenceStateValue.textContent = "NEW";
+      presenceIdValue.textContent = String(rawId);
+    }
+
+    presenceCountNew.textContent    = String(presenceTotals.fresh);
+    presenceCountRepeat.textContent = String(presenceTotals.repeat);
+    presenceCountEmpty.textContent  = String(presenceTotals.empty);
+    presenceLongestRun.textContent  = String(presenceLongestRunSeen);
+    presenceMeta.textContent = presenceRecords + " record" +
+      (presenceRecords === 1 ? "" : "s") + " observed";
+  }
+
+  btnPresenceReset.addEventListener("click", function () {
+    presenceDetectorLastId = null;
+    presenceRunLength = 0;
+    presenceLongestRunSeen = 0;
+    presenceRecords = 0;
+    presenceTotals = { empty: 0, fresh: 0, repeat: 0 };
+    setPresenceCardState("presence-idle");
+    presenceStateValue.textContent = "-";
+    presenceIdValue.textContent = "waiting for the next record…";
+    presenceCountNew.textContent = "0";
+    presenceCountRepeat.textContent = "0";
+    presenceCountEmpty.textContent = "0";
+    presenceLongestRun.textContent = "0";
+    presenceMeta.textContent = "no records yet";
+  });
+
+  // ---------------------------------------------------------------------
   //  IMU log — captures ONE ROW PER TELEMETRY RECORD while running (called
   //  from updateImu() below, at whatever rate the serial link actually
   //  delivers - full resolution, nothing skipped or sampled), and
@@ -1117,7 +1326,10 @@
       yaw: imuLatest.yaw, pitch: imuLatest.pitch, roll: imuLatest.roll, gravity: imuLatest.gravity,
       ax: imuLatest.ax, ay: imuLatest.ay, az: imuLatest.az,
       gx: imuLatest.gx, gy: imuLatest.gy, gz: imuLatest.gz,
-      temp: rfidLastTemp, rfidId: rfidLastId
+      // Same pass-through policy as the live card now (see the RFID state
+      // block above) - most rows will have blank temp/rfidId, populated
+      // only on the exact record a fresh read actually landed in.
+      temp: rfidCurrentTemp, rfidId: rfidCurrentId
     };
     imuLog.unshift(entry);
     if (imuLog.length > IMU_LOG_MAX) { imuLog.length = IMU_LOG_MAX; }
@@ -1413,27 +1625,60 @@
       gravityValue.textContent = "-";
     }
 
-    // --- temp + RFID: record a fresh sighting if this packet has one, then
-    // let renderRfidCards() decide what the card actually shows (sticky
-    // last-known / stale / "no tag found" - see the comment on that state
-    // block above for why it isn't as simple as "show data.rfid_id").
+    // --- temp + RFID: the raw mirror first. These three stay pure
+    // pass-through - exactly what THIS record said, nothing carried from
+    // the previous one. The held verdict is derived from them below; it
+    // never writes back into them. See the state block above.
     var now = Date.now();
-    if (data.rfid_id !== null && data.rfid_id !== undefined) {
-      rfidLastId = data.rfid_id;
-      rfidLastTemp = (data.temperature === null || data.temperature === undefined)
-        ? rfidLastTemp : data.temperature;
-      rfidLastSeenTs = now;
-      rfidLastResult = "found";
-      // A fresh tag showed up while a scan was armed and pending -> that IS
-      // the probe's result. Log it once, then disarm; a fresh tag arriving
-      // with nothing pending (e.g. mid READ RFID LOOP) is just normal
-      // telemetry and isn't logged - see the note on the panel above.
+    rfidCurrentId = (data.rfid_id === null || data.rfid_id === undefined) ? null : data.rfid_id;
+    rfidCurrentTemp = (data.temperature === null || data.temperature === undefined) ? null : data.temperature;
+    // The authoritative freshness signal as of gateway V1.3.5. Prefer it
+    // over a null-check on rfid_id: PROTOCOL_V10.md section 2.3 says the two
+    // always agree and that the flag exists precisely so this code doesn't
+    // have to infer a verdict from a sentinel. Accepts 1 or true so the
+    // frontend doesn't care whether the backend ever switches int/bool.
+    rfidCurrentValid = (data.rfid_valid === 1 || data.rfid_valid === true);
+
+    // Diagnostic side-channel, deliberately fed from data.rfid_id rather
+    // than rfidCurrentId so it stays independent of anything the cards do
+    // with that value. Read-only: it classifies and displays, and touches
+    // nothing else. See the Tag Presence Detector section above.
+    updateTagPresence(data.rfid_id);
+
+    // The flag is what makes this a "found", not the id: a record carrying an
+    // id with rfid_valid=0 does NOT resolve a scan, which is the whole point
+    // of preferring the explicit signal. The id is required too, but only as
+    // a malformed-record guard - PROTOCOL_V10.md section 2.3 guarantees the
+    // two agree, so a record where they don't is broken, and a broken record
+    // should not be allowed to write a verdict (it would put a literal
+    // "null" on the card and a contradictory NO TAG row in Scan History).
+    // Skipping it leaves the scan pending, so it resolves on the next good
+    // record or on the timeout, which is the right failure mode.
+    if (rfidCurrentValid && rfidCurrentId !== null) {
+      // A CONFIRMED read landed. If a scan was armed, this is that scan's
+      // result: log it once, then disarm. Scan History still only ever
+      // records armed scans - a confirmed read arriving with nothing
+      // pending is normal telemetry and is not logged, unchanged.
       if (rfidOneShotDeadline !== null) {
-        logScanResult(now, data.rfid_id, rfidLastTemp, rfidPendingSource, data.timestamp, rfidPendingScanId);
+        logScanResult(now, rfidCurrentId, rfidCurrentTemp, rfidPendingSource, data.timestamp, rfidPendingScanId);
       }
+      // The card's held verdict, on the other hand, IS updated either way.
+      // A confirmed read is the strongest statement the hardware can make
+      // about what is in front of the reader, and it is strictly more
+      // current than whatever the previous scan concluded - refusing to
+      // show it would mean displaying a stale verdict while better
+      // information sat on the wire. It is still only ever set by a
+      // confirmed read and only ever cleared by the next scan arming;
+      // rfid_valid=0 records never touch it, which is what keeps this from
+      // being the old sticky card.
+      rfidHeldResult = { found: true, id: rfidCurrentId, temp: rfidCurrentTemp, at: now };
       rfidOneShotDeadline = null;
       rfidPendingSource = null;
       rfidPendingScanId = null;
+      // Unchanged path, and it still wins: a tag arriving during the
+      // extended "waiting for link" hold resolves the scan as FOUND right
+      // here, exactly as it did before that hold existed.
+      rfidResolveHeldForLink = false;
       refreshRfidOnceAvailability();
     }
     renderRfidCards(now);
@@ -1499,12 +1744,11 @@
                     .catch(function () { /* server not ready yet; SSE will say */ });
   startStream();
 
-  // The RFID cards have wall-clock-driven states (stale after N seconds
-  // quiet, "NO TAG FOUND" after a one-shot's timeout) that must not wait on
-  // the next telemetry packet to appear — the stream can legitimately go
-  // quiet for stretches (README: "nothing here should ever interpret quiet
-  // as broken"), and a one-shot's own telemetry can stop right as its
-  // timeout elapses. A plain low-rate timer keeps those states honest even
-  // when nothing is arriving over SSE.
+  // The RFID cards have one wall-clock-driven state left: a one-shot scan's
+  // timeout, which must not wait on the next telemetry packet to fire — the
+  // stream can legitimately go quiet for stretches (README: "nothing here
+  // should ever interpret quiet as broken"), and a one-shot's own telemetry
+  // can stop right as its timeout elapses. A plain low-rate timer keeps
+  // that honest even when nothing is arriving over SSE.
   setInterval(function () { renderRfidCards(Date.now()); }, 500);
 })();

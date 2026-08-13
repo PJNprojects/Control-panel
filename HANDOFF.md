@@ -21,6 +21,28 @@ yourself.
 Browser (this UI)  <-- SSE/HTTP -->  Flask on your PC  <-- USB serial, 115200 -->  ESP32 Gateway  <-- BLE -->  Collar
 ```
 
+## 1a. Gateway firmware V1.3.5 or newer is REQUIRED
+
+This panel now parses the **13-field** telemetry record defined in
+`ESP Gateway/PROTOCOL_V10.md`. V1.3.5 added one column, `rfid_valid`, in the
+middle of the record — between `rfid_id` and `ble_connected`.
+
+**It will not work against older gateway firmware.** Every telemetry line from a
+pre-V1.3.5 gateway is 12 fields wide and is rejected as a parse error, so you get
+a log panel full of red `expected 13 tab-separated fields, got 12` entries and no
+telemetry at all. That is deliberate: the new column landed exactly where
+`ble_connected` used to be, so a parser that shrugged and carried on would report
+a *plausible but wrong* link state and packet age rather than failing visibly.
+If you see that error, flash the gateway; don't work around it here.
+
+`rfid_valid` is `0`/`1` (never `-`) and is `1` only when the collar's own
+confirmation logic — five CRC-valid reads of the same tag within 2 s — accepted
+the read that produced that record. The panel uses it as the authoritative
+"did this scan find a tag" signal. V1.3.5 also fixed a real firmware bug in which
+`rfid_id`/`temperature` were never reset once a tag had been seen, so they kept
+reprinting the first tag for the rest of the session; if you have chased
+"the RFID value is sticky" from this side before, that was at least partly it.
+
 ## 2. First run
 
 1. Double-click `Launch_ControlPanel.bat` (Windows) or `Launch_ControlPanel.command`
@@ -67,12 +89,34 @@ keeps doing whatever it was doing.
   presses and the auto-scan timer), each row a timestamp plus FOUND or NO TAG.
   Has its own period/`m` controls (n is fixed at 1, see section 4) and a
   "Download CSV" button.
+- **Temp / RFID cards** — the two big readouts next to the IMU dial. They show
+  **the last scan's outcome, held until the next scan starts**, not a live mirror
+  of the wire. Four states: pulsing blue `SCANNING…` (or `WAITING LINK…`, see
+  section 4a) while a scan is in flight; green with the tag id + temperature if
+  that scan found one; amber `NO TAG` if it didn't; grey `-` before any scan has
+  run this session. Pressing `READ RFID <m>` (or the auto-scan timer firing)
+  blanks them straight back to `SCANNING…`. They deliberately do **not** revert
+  to `-` when an ordinary `rfid_valid=0` record arrives with no scan running —
+  nothing is reading at that point, so such a record says nothing about the last
+  scan, and blanking on it would mean the outcome could only be seen in the
+  instant it resolved. For the raw per-record view, use the two panels below.
+- **Tag Presence Detector** — a diagnostic-only readout of what the RAW `rfid_id`
+  field is doing packet to packet, independent of any scan: EMPTY (the `-`
+  sentinel), NEW (a real id, different from the previous non-empty one), or
+  REPEAT ×N (the same id N records in a row), plus running totals and the longest
+  repeat run seen. Use it to tell a PC-side problem from a gateway/node-side one:
+  this panel carries nothing forward between records, so a long REPEAT run with
+  no tag in front of the reader means the repeat is coming from upstream, not
+  from here. (Gateway V1.3.5 fixed one real upstream cause of exactly that — see
+  section 1a.) It is read-only — it never writes to Scan History and never
+  touches the Temp/RFID cards, and it classifies off raw `rfid_id` presence, not
+  off `rfid_valid`. "Reset" only clears its own counters.
 - **IMU Log** — same idea, periodic snapshots of yaw/pitch/roll/gravity/ax..gz
   instead of scan verdicts. Own period control, own CSV download.
 - **Log panel** — every `#`-prefixed line from the gateway, scrolling: boot messages,
   the header line once, and a `# cmd: ... -> sent / FAILED (...) / unknown '...'` line
   for every command you send.
-- **Latest reading card** — the most recent 12-field telemetry record, decoded (accel
+- **Latest reading card** — the most recent 13-field telemetry record, decoded (accel
   in m/s², gyro in rad/s, not raw wire integers), not a scrolling history table. This
   tool answers "what's happening right now," not "log everything to a file."
 
@@ -155,6 +199,19 @@ There's a 20s watchdog that force-re-enables the button if the "ready" line is e
 missed or reworded on the gateway side, so a wording change over there can't wedge
 the button disabled forever — but it also means that specific string is worth
 keeping in sync between the two projects.
+
+That same reconnect window is why a NO TAG row is **not** written the instant the
+attempt timeout expires. There is no "scan finished" signal from the hardware, so
+the panel budgets `m × ~70ms + 400ms` from the moment the command is sent — a pure
+wall-clock timer that knows nothing about the reconnect cycle happening inside it.
+With a small `m` that budget can run out while the command channel is still coming
+back, i.e. before the collar has attempted a single read, and the resulting NO TAG
+would be a verdict about the link rather than about the tag. So the scan is held
+pending until `bleReconnecting` is false as well (the card shows WAITING LINK…
+instead of SCANNING… while it waits), and only then is the result logged. A tag
+arriving during that extended wait still resolves it as FOUND, unchanged. Nothing
+can hang: the watchdog above guarantees `bleReconnecting` returns to false within
+20s worst case, so a held scan resolves in at most its own budget plus ~20s.
 
 ## 5. Reality check before you trust any of this
 

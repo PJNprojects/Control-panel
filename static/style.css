@@ -5,16 +5,33 @@
  */
 
 :root {
-  --bg:        #12151a;
-  --panel:     #1a1f27;
-  --panel-2:   #212832;
-  --line:      #2c3542;
-  --text:      #dfe6ef;
-  --muted:     #8794a5;
+  /* Changed 2026-08-10: full black + neutral greys, on request - the
+     previous palette (#12151a etc.) was dark but still carried a blue
+     tint in every neutral (background, panel, border, muted text). These
+     are now true neutrals (R=G=B or within 1) so nothing reads as "dark
+     blue" anymore. --accent/--ok/--warn/--err are UNCHANGED - those are
+     meaningful state colors (primary action, on/good, caution, error),
+     not background chrome, and stay as deliberately colored signals per
+     the "use meaningful colors" requirement from earlier. --dim and
+     --inset are new: --dim replaces several near-duplicate blue-greys
+     that were scattered around for "inactive/secondary" ink, --inset is
+     for recessed trays (log box, bar tracks, tooltips) that need to read
+     as one step darker than a .panel card without becoming indistinguishable
+     from the page background now that the page background is pure black. */
+  --bg:        #000000;
+  --panel:     #141414;
+  --panel-2:   #1c1c1c;
+  --inset:     #0a0a0a;
+  --line:      #333333;
+  --text:      #e8e8e8;
+  --muted:     #8a8a8a;
+  --dim:       #5a5a5a;
+  --track-off: #3a3a3a;
   --accent:    #4da3ff;
   --ok:        #4ccb7c;
   --warn:      #ffb347;
   --err:       #ff6b6b;
+  --crosshair: #ff4d4d;
   --mono: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
 }
 
@@ -65,7 +82,7 @@ h3 {
   display: inline-block; margin-left: 6px;
 }
 .dot.up   { background: var(--ok);  box-shadow: 0 0 8px var(--ok); }
-.dot.down { background: #555f6d; }
+.dot.down { background: var(--dim); }
 .dot.stale { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
 
 .status-text { color: var(--muted); font-size: 12px; font-family: var(--mono); }
@@ -98,7 +115,7 @@ button {
 button:hover:not(:disabled) { filter: brightness(1.25); }
 button:disabled { opacity: .45; cursor: default; }
 button.primary { background: #1f4a7a; border-color: #2f6ba8; }
-button.secondary { background: #34405020; }
+button.secondary { background: #33333320; }
 button.danger  { background: #6d2530; border-color: #93313f; }
 button.ghost   { background: transparent; color: var(--muted); }
 button.small   { padding: 3px 8px; font-size: 11px; }
@@ -158,7 +175,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   left: calc(100% + 8px);
   top: 0;
   width: 190px;
-  background: #0d1015;
+  background: var(--inset);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -203,7 +220,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 }
 .slider-track {
   position: absolute; inset: 0;
-  background: #3a4452;
+  background: var(--track-off);
   border: 1px solid var(--line);
   border-radius: 12px;
   transition: background .15s ease-out, border-color .15s ease-out;
@@ -212,13 +229,13 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   position: absolute; top: 2px; left: 2px;
   width: 18px; height: 18px;
   border-radius: 50%;
-  background: #c7d0dc;
+  background: #cfcfcf;
   transition: left .15s ease-out, background .15s ease-out;
 }
 .slider-switch.is-on .slider-track { background: var(--ok); border-color: #3fae6c; }
 .slider-switch.is-on .slider-knob  { left: 24px; background: #eafff1; }
-.slider-switch.is-off .slider-track { background: #3a4452; border-color: var(--line); }
-.slider-switch.is-off .slider-knob  { left: 2px; background: #c7d0dc; }
+.slider-switch.is-off .slider-track { background: var(--track-off); border-color: var(--line); }
+.slider-switch.is-off .slider-knob  { left: 2px; background: #cfcfcf; }
 .slider-switch input:disabled { cursor: default; }
 
 .press-toggle {
@@ -229,13 +246,13 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   padding: 7px 8px;
   border-radius: 5px;
   border: 1px solid var(--line);
-  background: #3a4452;
+  background: var(--track-off);
   color: var(--text);
   cursor: pointer;
 }
 .press-toggle:hover:not(:disabled) { filter: brightness(1.15); }
 .press-toggle.is-on  { background: var(--ok); border-color: #3fae6c; color: #06210f; }
-.press-toggle.is-off { background: #3a4452; border-color: var(--line); color: var(--text); }
+.press-toggle.is-off { background: var(--track-off); border-color: var(--line); color: var(--text); }
 .press-toggle:disabled { opacity: .5; cursor: default; }
 
 .raw { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 12px; }
@@ -268,16 +285,23 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .dial-axis { stroke: var(--line); stroke-width: 1; }
 
 #yaw-markers polygon { fill: var(--accent); }
-#imu-dial.imu-inactive #yaw-markers polygon { fill: #4d5666; }
+/* The forward marker is the one fixed reference point on the physical
+   device (front of the collar) - it needs to stay identifiable at ANY yaw
+   angle, including upside-down relative to the screen, which rules out a
+   text label ("FWD" reads fine at 0° and unreadable at 180°). Bigger +
+   a brighter blue shade solves that without relying on orientation-
+   dependent legibility - shape and color read the same rotated any way. */
+#yaw-markers polygon.marker-forward { fill: #9fd4ff; }
+#imu-dial.imu-inactive #yaw-markers polygon { fill: var(--dim); }
 /* Smooths the rotation/translation itself, on top of the EMA filter on the
    underlying values — the filter kills sample-to-sample jitter, this kills
    the remaining visual "snap" between frames. */
 #yaw-markers, #crosshair { transition: transform .2s ease-out; }
 
-#crosshair line { stroke: var(--warn); stroke-width: 2.5; stroke-linecap: round; }
-#crosshair circle { fill: var(--warn); }
+#crosshair line { stroke: var(--crosshair); stroke-width: 2.5; stroke-linecap: round; }
+#crosshair circle { fill: var(--crosshair); }
 #imu-dial.imu-inactive #crosshair line,
-#imu-dial.imu-inactive #crosshair circle { stroke: #4d5666; fill: #4d5666; }
+#imu-dial.imu-inactive #crosshair circle { stroke: var(--dim); fill: var(--dim); }
 
 .imu-readout {
   display: flex;
@@ -320,7 +344,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   position: relative;
   width: 34px;
   height: 160px;
-  background: #0d1015;
+  background: var(--inset);
   border: 1px solid var(--line);
   border-radius: 5px;
   overflow: hidden;
@@ -363,7 +387,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   position: relative;
   width: 20px;
   height: 90px;
-  background: #0d1015;
+  background: var(--inset);
   border: 1px solid var(--line);
   border-radius: 4px;
   overflow: hidden;
@@ -393,7 +417,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 
 .imu-highlight { display: flex; flex-direction: column; gap: 8px; }
 .highlight-card {
-  background: #0d1015;
+  background: var(--inset);
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
   border-radius: 6px;
@@ -422,26 +446,38 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   text-overflow: ellipsis;
 }
 .highlight-value.small { font-size: 13px; letter-spacing: .01em; }
-.highlight-value.none { color: #5c6675; font-weight: 400; }
-.highlight-value.stale { color: var(--warn); }
-.highlight-value.warn  { color: var(--warn); }
+.highlight-value.none { color: var(--dim); font-weight: 400; }
 .highlight-value.scanning { color: var(--accent); animation: rfid-scanning-pulse 1s ease-in-out infinite; }
+/* "NO TAG" text, coloured off the card state rather than needing its own
+   class on the value element - one less class for app.js to add/remove.
+   The :not(.none) matters: in this state the TEMP card's value is a plain
+   "-" (there was no tag, so there is no temperature), and that dash should
+   stay dim like every other empty readout rather than being shouted in
+   amber. Only the card's left edge carries the state on that side. */
+.highlight-card.card-no-tag .highlight-value:not(.none) { color: var(--warn); }
 .highlight-unit { font-size: 10px; color: var(--muted); margin-top: 2px; }
 
 /* Card accent (the left edge) carries the same state as the value text, so
-   it reads at a glance without having to read the number: blue = nothing
-   seen yet this session, green = a fresh read just landed, amber = seen
-   before but gone quiet a while / a one-shot scan came up empty, pulsing
-   blue = a scan is in flight right now. This is the "so we can see the
-   change" bit - the color itself changes on the events that matter instead
-   of everything staying visually identical whether a tag was just found or
-   nothing has happened all session. No box-shadow anywhere in this state
+   it reads at a glance without having to read the number:
+
+     pulsing blue = a scan is in flight right now
+     green        = the last scan found a tag (held until the next scan)
+     amber        = the last scan found nothing (held until the next scan)
+     blue         = no scan has run yet this session
+
+   Changed 2026-08-13: an amber state is back, but it is NOT the old
+   "stale" state that was dropped on 2026-08-10 - that one meant "this
+   number is old and might be a lie", which was the whole problem. This one
+   means "a scan completed and the answer was no tag", a definite verdict
+   with a definite lifetime (it is cleared the instant the next scan arms).
+   Amber rather than red for the same reason Scan History's NO TAG rows are
+   amber: finding nothing is a normal outcome, not an error, and the two
+   readouts should agree on colour. No box-shadow anywhere in this state
    set, by the same "no shadows" rule as the toggle buttons - the pulse is
    an opacity animation, not a glow. */
 .highlight-card.card-idle     { border-left-color: var(--accent); }
 .highlight-card.card-fresh    { border-left-color: var(--ok); transition: border-left-color .2s ease-out; }
-.highlight-card.card-stale    { border-left-color: var(--warn); }
-.highlight-card.card-warn     { border-left-color: var(--warn); }
+.highlight-card.card-no-tag   { border-left-color: var(--warn); transition: border-left-color .2s ease-out; }
 .highlight-card.card-scanning { border-left-color: var(--accent); animation: rfid-scanning-pulse 1s ease-in-out infinite; }
 
 @keyframes rfid-scanning-pulse {
@@ -471,7 +507,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 
 #chart-accel, #chart-gyro {
   display: block;
-  background: #0d1015;
+  background: var(--inset);
   border: 1px solid var(--line);
   border-radius: 4px;
 }
@@ -503,7 +539,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #0d1015;
+  background: var(--inset);
 }
 .scan-table {
   width: 100%;
@@ -526,14 +562,104 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 }
 .scan-table td {
   padding: 5px 10px;
-  border-bottom: 1px solid #1c222b;
+  border-bottom: 1px solid #242424;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.scan-table tbody tr:hover { background: #151a21; }
+.scan-table tbody tr:hover { background: #1a1a1a; }
 .scan-table td.scan-result-found { color: var(--ok); font-weight: 600; }
 .scan-table td.scan-result-none  { color: var(--warn); font-weight: 600; }
 .scan-table td.scan-source { color: var(--muted); text-transform: uppercase; font-size: 10px; }
+
+/* ---- tag presence detector ----
+   Same card vocabulary as .highlight-card above (inset tray, coloured left
+   edge carrying the state) so it reads as part of the same family without
+   being wired to it. Colour meanings, consistent with the rest of the
+   palette: grey/--dim = nothing on the wire (EMPTY, the normal resting
+   state), green/--ok = a genuinely new id (NEW), amber/--warn = the same id
+   arriving again (REPEAT) - amber because a repeat is not an error, it's
+   the thing the operator is here to notice. No box-shadow, same rule as
+   everywhere else in this file. */
+
+#tag-presence-panel h2 #btn-presence-reset { margin-left: auto; }
+
+.presence-row {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.presence-card {
+  background: var(--inset);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--dim);
+  border-radius: 6px;
+  padding: 10px 14px;
+  min-width: 280px;
+  flex: 1 1 280px;
+}
+.presence-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+}
+.presence-state {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  margin-top: 4px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+/* Fixed-ish line so "-" -> a 15-digit FDX-B id doesn't jog the layout, and
+   the id is shown in full rather than ellipsised - it's the value being
+   diagnosed. */
+.presence-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  min-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.presence-card.presence-idle   { border-left-color: var(--dim); }
+.presence-card.presence-empty  { border-left-color: var(--dim); }
+.presence-card.presence-new    { border-left-color: var(--ok); }
+.presence-card.presence-repeat { border-left-color: var(--warn); }
+
+.presence-card.presence-empty  .presence-state { color: var(--dim); }
+.presence-card.presence-new    .presence-state { color: var(--ok); }
+.presence-card.presence-repeat .presence-state { color: var(--warn); }
+
+.presence-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.presence-stat {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 12px;
+  min-width: 78px;
+  text-align: center;
+}
+.presence-stat-label {
+  display: block;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+}
+.presence-stat-value {
+  display: block;
+  font-family: var(--mono); font-size: 17px; font-weight: 700; color: var(--text);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.presence-stat-value.ink-new    { color: var(--ok); }
+.presence-stat-value.ink-repeat { color: var(--warn); }
+.presence-stat-value.ink-empty  { color: var(--dim); }
+
+.presence-note { margin: 10px 0 0; line-height: 1.5; }
 
 /* ---- telemetry card ---- */
 
@@ -558,7 +684,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
 }
-.cell-value.none { color: #5c6675; }
+.cell-value.none { color: var(--dim); }
 .cell-unit { font-size: 10px; color: var(--muted); font-family: var(--mono); }
 
 /* ---- log ---- */
@@ -568,7 +694,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .log {
   height: 340px;
   overflow-y: auto;
-  background: #0d1015;
+  background: var(--inset);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 8px;
@@ -577,7 +703,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   line-height: 1.45;
 }
 .log-row { display: flex; gap: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.log-time { color: #4d5666; flex: 0 0 auto; }
+.log-time { color: var(--dim); flex: 0 0 auto; }
 .log-text { flex: 1 1 auto; }
 .log-ok    .log-text { color: var(--ok); }
 .log-error .log-text { color: var(--err); }

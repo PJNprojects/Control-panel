@@ -17,7 +17,7 @@ to change it.
   collar (nRF52)                gateway (ESP32)                    this tool
  ┌──────────────┐  BLE notify  ┌───────────────┐  USB serial   ┌──────────────┐
  │  CattleNode  │─────────────>│ aa100001 sub  │──────────────>│  reader      │
- │              │              │  -> 12-field  │   115200 8N1  │  thread      │
+ │              │              │  -> 13-field  │   115200 8N1  │  thread      │
  │              │<─────────────│     record    │<──────────────│  writer      │
  └──────────────┘  aa100002    └───────────────┘  ASCII lines  └──────┬───────┘
                    write-only                                         │
@@ -184,7 +184,7 @@ Every SSE frame is one JSON object with a `type`:
 
 | `type` | When | Frontend destination |
 |---|---|---|
-| `telemetry` | a 12-field record parsed cleanly | the latest-reading card |
+| `telemetry` | a 13-field record parsed cleanly | the latest-reading card |
 | `log` | any `#` line — boot header, `# cmd:` acks, `# panel:` notices | the log panel |
 | `status` | connect / disconnect / read failure | the header indicator |
 | `ping` | idle keepalive every 15 s | ignored |
@@ -316,12 +316,46 @@ any change over there needs a change here.
 |---|---|---|
 | `serial_link.DEFAULT_BAUD` | 115200 | `#define SERIAL_BAUD 115200`, `ESP Gateway/include/config.h:42` |
 | `commands.GATEWAY_MAX_LINE_CHARS` | 47 | `#define CMD_LINE_MAX 48` (counts NUL), `ESP Gateway/src/main.cpp:1159` |
-| `telemetry_parser.TELEMETRY_FIELDS` | 12 names | `REC_HEADER`, `ESP Gateway/src/main.cpp` §printTelemetry |
+| `telemetry_parser.TELEMETRY_FIELDS` | 13 names | `REC_HEADER`, `ESP Gateway/src/main.cpp` §printTelemetry |
 | `telemetry_parser.NONE_SENTINEL` | `-` | `REC_NONE`, same file |
 
 The harness re-derives the field list from the documented header line and
 compares, so a rename or reorder on the gateway side fails a test here rather
 than silently mis-labelling a column.
+
+### The 12 → 13 field change (gateway V1.3.5)
+
+`rfid_valid` was added at **position 11**, between `rfid_id` and
+`ble_connected` — see `ESP Gateway/PROTOCOL_V10.md` §2. Nothing was renamed or
+reordered around it; the record simply got one column wider in the middle.
+
+```
+timestamp  collar_id  ax ay az  gx gy gz  temperature  rfid_id  rfid_valid  ble_connected  age_ms
+                                                                ^^^^^^^^^^ new
+```
+
+`rfid_valid` is `0` or `1` and **never `-`**: it is a flag, not a value that
+can be "not fresh", so a record with no confirmed read prints `0` rather than
+the sentinel. It is stored as a 0/1 int, the same convention as
+`ble_connected`, and the parser rejects anything else in that column.
+
+Two things worth knowing about it:
+
+- **It is redundant with `rfid_id`/`temperature` being `-`, on purpose.**
+  §2.3 of the protocol says a parser may use either signal; the flag exists so
+  it doesn't have to string-compare against `-`. The frontend prefers the flag.
+- **The redundancy is new.** Pre-V1.3.5 firmware wrote `rfid_id`/`temperature`
+  on a confirmed read and never reset them, so one tag seen once kept
+  reprinting for the rest of the session. That was a real firmware-side cause
+  of the "sticky RFID" behaviour chased from this side more than once. V1.3.5
+  derives RFID freshness per-record from the current packet's flag bit, the
+  same way IMU freshness always worked, so the two signals now agree by
+  construction.
+
+Because the new column landed exactly where `ble_connected` used to be, an old
+parser pointed at new firmware reads *shifted*, not *broken*. The width check
+in `parse_telemetry()` is therefore a hard `!=`, not a `>=`, and the harness
+asserts that a 12-field line is refused outright.
 
 ---
 

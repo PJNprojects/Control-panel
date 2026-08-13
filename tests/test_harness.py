@@ -172,10 +172,17 @@ def test_line_assembler():
 #  2. Reader thread against a synthetic gateway
 # ---------------------------------------------------------------------------
 
+# 13 fields as of gateway V1.3.5 - `rfid_valid` was inserted at position 11,
+# between rfid_id and ble_connected (ESP Gateway/PROTOCOL_V10.md section 2.1).
+# RECORD_1 is a confirmed read, so rfid_valid is 1 and agrees with its
+# non-'-' rfid_id/temperature; RECORD_2 has no tag, so it is 0 and agrees with
+# their '-'. The two signals agreeing is the property V1.3.5 guarantees, so
+# the fixtures have to be built that way or they'd be testing a record shape
+# the gateway cannot emit.
 HEADER = ("# timestamp\tcollar_id\tax\tay\taz\tgx\tgy\tgz\t"
-          "temperature\trfid_id\tble_connected\tage_ms")
-RECORD_1 = "123457\tC001\t-37\t12\t981\t5\t-3\t128\t38.5\t985141001320293\t1\t1"
-RECORD_2 = "124030\tC001\t-\t-\t-\t-\t-\t-\t-\t-\t1\t0"
+          "temperature\trfid_id\trfid_valid\tble_connected\tage_ms")
+RECORD_1 = "123457\tC001\t-37\t12\t981\t5\t-3\t128\t38.5\t985141001320293\t1\t1\t1"
+RECORD_2 = "124030\tC001\t-\t-\t-\t-\t-\t-\t-\t-\t0\t1\t0"
 ACK = "# cmd: READ RFID 5 20 -> sent"
 
 
@@ -237,12 +244,22 @@ def test_reader_thread_stream():
               "record 1 temperature and tag id parsed", repr(first))
         check(first["ble_connected"] == 1 and first["age_ms"] == 1,
               "record 1 link state and age parsed", repr(first))
+        # The field that shifted everything: if rfid_valid were being read out
+        # of ble_connected's old column, the two checks above would still pass
+        # on this fixture (both are 1). This one, plus RECORD_2's, is what
+        # actually pins the new column down.
+        check(first["rfid_valid"] == 1,
+              "record 1 rfid_valid parsed from its own column", repr(first))
 
         second = telem[1]["data"]
         check(second["timestamp"] == 124030 and second["age_ms"] == 0,
               "split-across-three-reads record reassembled intact", repr(second))
         check(all(second[f] is None for f in ("ax", "ay", "az", "gx", "gy", "gz")),
               "'-' sentinels became None, NOT 0", repr(second))
+        check(second["rfid_valid"] == 0 and second["ble_connected"] == 1
+              and second["age_ms"] == 0,
+              "no-tag record: rfid_valid 0 while the two fields it shifted "
+              "still read their own values", repr(second))
 
     check(port.closed, "port closed by the loop's cleanup after the failure")
     check(link.status()["connected"] is False,
@@ -456,9 +473,18 @@ def test_parser():
 
     check(parser.TELEMETRY_FIELDS == [
         "timestamp", "collar_id", "ax", "ay", "az", "gx", "gy", "gz",
-        "temperature", "rfid_id", "ble_connected", "age_ms"],
-        "field list matches HANDOFF.md section 1 order exactly",
+        "temperature", "rfid_id", "rfid_valid", "ble_connected", "age_ms"],
+        "field list matches PROTOCOL_V10.md section 2.1 order exactly",
         repr(parser.TELEMETRY_FIELDS))
+    check(parser.FIELD_COUNT == 13,
+          "record is 13 fields wide, not the pre-V1.3.5 12",
+          repr(parser.FIELD_COUNT))
+    check(parser.TELEMETRY_FIELDS.index("rfid_valid") == 10,
+          "rfid_valid sits at index 10, between rfid_id and ble_connected",
+          repr(parser.TELEMETRY_FIELDS))
+    check("rfid_valid" in parser.FIELD_UNITS,
+          "rfid_valid carries a unit/meaning string for the UI",
+          repr(sorted(parser.FIELD_UNITS)))
 
     # Derive the field list straight from the documented header line and
     # compare - this is the check that catches a rename or a reorder.
@@ -474,11 +500,41 @@ def test_parser():
           and isinstance(record["rfid_id"], str),
           "rfid_id stays a string - leading zeros would be lost as an int")
 
+    check(record["rfid_valid"] == 1 and isinstance(record["rfid_valid"], int)
+          and not isinstance(record["rfid_valid"], bool),
+          "rfid_valid is a 0/1 int, same convention as ble_connected",
+          repr(record["rfid_valid"]))
+
     blank = parser.parse_telemetry(RECORD_2)
     check(blank["temperature"] is None and blank["rfid_id"] is None,
           "'-' temperature and tag id are None")
     check(blank["ax"] is None and blank["ax"] != 0,
           "'-' accel is None, never 0")
+    check(blank["rfid_valid"] == 0,
+          "rfid_valid is 0 - never None - on a record with no confirmed read",
+          repr(blank["rfid_valid"]))
+    # rfid_valid is a flag, not a value that can be "not fresh", so unlike
+    # every field around it, '-' is NOT a legal thing to see in its column.
+    dashed = RECORD_2.split("\t")
+    dashed[10] = "-"
+    try:
+        parser.parse_telemetry("\t".join(dashed))
+        check(False, "'-' in rfid_valid should be rejected, not accepted")
+    except ValueError as exc:
+        check("rfid_valid" in str(exc),
+              "'-' in rfid_valid rejected, and the error names the field",
+              str(exc))
+
+    # The whole failure mode PROTOCOL_V10.md section 4 warns about: an old
+    # 12-field line must be refused outright, not silently read with
+    # ble_connected/age_ms shifted one column left.
+    legacy = "\t".join(RECORD_1.split("\t")[:10] + RECORD_1.split("\t")[11:])
+    try:
+        parser.parse_telemetry(legacy)
+        check(False, "a pre-V1.3.5 12-field record must not parse", legacy)
+    except ValueError as exc:
+        check("13" in str(exc) and "12" in str(exc),
+              "12-field record rejected with both counts named", str(exc))
 
     never = RECORD_2[:-1] + "-1"
     check(parser.parse_telemetry(never)["age_ms"] is None,
@@ -666,7 +722,8 @@ def test_sse_stream():
         check(event is not None and event.get("type") == "telemetry",
               "a record arrives tagged type=telemetry", repr(event))
         if event and event.get("data"):
-            check(event["data"]["rfid_id"] == "985141001320293",
+            check(event["data"]["rfid_id"] == "985141001320293"
+                  and event["data"]["rfid_valid"] == 1,
                   "its parsed fields survive the JSON round trip")
 
         threading.Timer(0.2, lambda: panel_app.link.broadcast(

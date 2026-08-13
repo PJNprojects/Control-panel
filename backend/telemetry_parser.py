@@ -21,10 +21,37 @@ arrive.
 
 THE RECORD
 ----------
-Twelve fields, tab-separated, one per BLE notify. Header, verbatim from the
-handoff (and from REC_HEADER in the gateway's `src/main.cpp`):
+Thirteen fields, tab-separated, one per BLE notify. Header, verbatim from
+`ESP Gateway/PROTOCOL_V10.md` section 2.1 (and from REC_HEADER in the
+gateway's `src/main.cpp`):
 
-    # timestamp<TAB>collar_id<TAB>ax<TAB>ay<TAB>az<TAB>gx<TAB>gy<TAB>gz<TAB>temperature<TAB>rfid_id<TAB>ble_connected<TAB>age_ms
+    # timestamp<TAB>collar_id<TAB>ax<TAB>ay<TAB>az<TAB>gx<TAB>gy<TAB>gz<TAB>temperature<TAB>rfid_id<TAB>rfid_valid<TAB>ble_connected<TAB>age_ms
+
+WHAT CHANGED IN GATEWAY V1.3.5 (and why this file moved with it)
+---------------------------------------------------------------
+`rfid_valid` is new, and it is inserted in the MIDDLE of the old record — at
+position 11, exactly where `ble_connected` used to sit. That is the whole
+change: twelve fields became thirteen, nothing was renamed or reordered
+around it. A parser built for the old format does not fail loudly against the
+new one field-by-field; it reads `ble_connected` out of `rfid_valid`'s column
+and `age_ms` out of `ble_connected`'s. The length check in parse_telemetry()
+below is what actually catches that, which is why it is a hard equality
+against FIELD_COUNT and not a `>=`.
+
+`rfid_valid` is 1 iff the COLLAR's own RFID session-confirmation logic (five
+CRC-valid reads of the same tag within 2s) was confirmed on the packet that
+produced this record. It is never '-': it is a boolean flag, not a value that
+can be "not fresh", so a not-fresh record prints 0.
+
+It carries no information that `rfid_id`/`temperature` being '-' didn't
+already carry — PROTOCOL_V10.md section 2.3 is explicit that a parser may use
+either signal, and that `rfid_valid` exists so it doesn't have to
+string-compare against '-'. It is worth having anyway because the '-' signal
+was, until V1.3.5, wrong: pre-V1.3.5 firmware wrote `rfid_id`/`temperature`
+only on a confirmed read and then NEVER reset them, so one tag seen once kept
+reprinting for the rest of the session. V1.3.5 derives RFID freshness from
+the current packet's flag bit, the same way IMU freshness always worked, so
+the two signals now agree by construction.
 
 SENTINELS ARE NOT ZEROS
 -----------------------
@@ -69,11 +96,12 @@ TELEMETRY_FIELDS: List[str] = [
     "gz",
     "temperature",
     "rfid_id",
+    "rfid_valid",
     "ble_connected",
     "age_ms",
 ]
 
-FIELD_COUNT = len(TELEMETRY_FIELDS)  # 12
+FIELD_COUNT = len(TELEMETRY_FIELDS)  # 13 as of gateway V1.3.5 (was 12)
 
 # Human-facing units, exposed so the UI does not have to hardcode them.
 FIELD_UNITS: Dict[str, str] = {
@@ -87,6 +115,7 @@ FIELD_UNITS: Dict[str, str] = {
     "gz": "milli-rad/s",
     "temperature": "degC (RFID implant, not ambient)",
     "rfid_id": "country(3) + national ID(12)",
+    "rfid_valid": "1 = collar confirmed this read",
     "ble_connected": "1 = link up",
     "age_ms": "ms since last valid packet",
 }
@@ -107,7 +136,7 @@ def _parse_int_or_none(raw: str, field: str) -> Optional[int]:
 
 
 def parse_telemetry(line: str) -> Dict[str, Any]:
-    """Parse one 12-field record. Raises ValueError if it is not one.
+    """Parse one 13-field record. Raises ValueError if it is not one.
 
     Returns a dict keyed by TELEMETRY_FIELDS. Sentinels come back as None.
     """
@@ -150,14 +179,25 @@ def parse_telemetry(line: str) -> Dict[str, Any]:
     #     must never become an int).
     record["rfid_id"] = None if parts[9] == NONE_SENTINEL else parts[9]
 
-    # 11: ble_connected - always 0 or 1, never '-'.
-    ble = _parse_int_or_none(parts[10], "ble_connected")
+    # 11: rfid_valid - always 0 or 1, never '-'. It is a flag saying whether
+    #     the collar confirmed a read on this packet, so "not fresh" is
+    #     expressed as 0, not as the '-' sentinel. Validated exactly like
+    #     ble_connected below, and stored the same way (0/1 int, not a Python
+    #     bool) so the two flag fields stay one convention across the record
+    #     and across the JSON that reaches the browser.
+    rfid_valid = _parse_int_or_none(parts[10], "rfid_valid")
+    if rfid_valid not in (0, 1):
+        raise ValueError("field 'rfid_valid': expected 0 or 1, got %r" % parts[10])
+    record["rfid_valid"] = rfid_valid
+
+    # 12: ble_connected - always 0 or 1, never '-'.
+    ble = _parse_int_or_none(parts[11], "ble_connected")
     if ble not in (0, 1):
-        raise ValueError("field 'ble_connected': expected 0 or 1, got %r" % parts[10])
+        raise ValueError("field 'ble_connected': expected 0 or 1, got %r" % parts[11])
     record["ble_connected"] = ble
 
-    # 12: age_ms - -1 means "no packet ever this session"; 0 is legitimate.
-    age = _parse_int_or_none(parts[11], "age_ms")
+    # 13: age_ms - -1 means "no packet ever this session"; 0 is legitimate.
+    age = _parse_int_or_none(parts[12], "age_ms")
     record["age_ms"] = None if age == AGE_NONE_SENTINEL else age
 
     return record
@@ -171,7 +211,7 @@ def classify(line: str) -> Dict[str, Any]:
 
     Three outcomes:
       {"type": "log",       "text": ...}                  '#' line
-      {"type": "telemetry", "text": ..., "data": {...}}    good 12-field record
+      {"type": "telemetry", "text": ..., "data": {...}}    good 13-field record
       {"type": "log",       "text": ..., "parse_error":}   anything else
 
     JUDGEMENT CALL: a non-'#' line that fails to parse is surfaced as a log

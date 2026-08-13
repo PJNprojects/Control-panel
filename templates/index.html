@@ -76,9 +76,13 @@
         <line class="dial-axis" x1="110" y1="15" x2="110" y2="205"></line>
         <line class="dial-axis" x1="15" y1="110" x2="205" y2="110"></line>
 
-        <!-- 4 arrow markers, 90deg apart, rotate together as the yaw dial -->
+        <!-- 4 arrow markers, 90deg apart, rotate together as the yaw dial.
+             The first one is the FORWARD reference (front of the collar) -
+             bigger + a brighter blue (see .marker-forward in style.css) so
+             it stays identifiable at any yaw angle, including upside-down
+             on screen, where a text label would stop being readable. -->
         <g id="yaw-markers">
-          <polygon points="110,10 103,24 117,24"></polygon>
+          <polygon class="marker-forward" points="110,4 99,28 121,28"></polygon>
           <polygon points="110,10 103,24 117,24" transform="rotate(90 110 110)"></polygon>
           <polygon points="110,10 103,24 117,24" transform="rotate(180 110 110)"></polygon>
           <polygon points="110,10 103,24 117,24" transform="rotate(270 110 110)"></polygon>
@@ -221,6 +225,56 @@
         </tbody>
       </table>
     </div>
+  </section>
+
+  <!-- Tag Presence Detector: a READ-ONLY window onto the raw rfid_id field
+       of the telemetry stream, classified once per record. It exists to
+       answer one diagnostic question the scan-oriented panels above can't:
+       is the wire itself handing us the same tag id over and over?
+       Deliberately decoupled - it never writes to Scan History, never
+       touches the live RFID/temp cards, and holds its own last-seen value
+       purely to compare consecutive records. See the block above
+       updateTagPresence() in app.js. -->
+  <section class="panel" id="tag-presence-panel">
+    <h2>Tag Presence Detector
+      <span class="muted small" id="presence-meta">no records yet</span>
+      <button id="btn-presence-reset" class="ghost small"
+              title="Forget the last-seen raw id and zero the counters. A view reset only - it sends nothing to the collar and does not touch Scan History or the RFID card.">Reset</button>
+    </h2>
+
+    <div class="presence-row">
+      <div class="presence-card presence-idle" id="presence-card">
+        <div class="presence-label">current record &mdash; raw rfid_id</div>
+        <div class="presence-state" id="presence-state">-</div>
+        <div class="presence-id" id="presence-id">waiting for the first record&hellip;</div>
+      </div>
+
+      <div class="presence-stats">
+        <div class="presence-stat">
+          <span class="presence-stat-label">new</span>
+          <span class="presence-stat-value ink-new" id="presence-count-new">0</span>
+        </div>
+        <div class="presence-stat">
+          <span class="presence-stat-label">repeat</span>
+          <span class="presence-stat-value ink-repeat" id="presence-count-repeat">0</span>
+        </div>
+        <div class="presence-stat">
+          <span class="presence-stat-label">empty</span>
+          <span class="presence-stat-value ink-empty" id="presence-count-empty">0</span>
+        </div>
+        <div class="presence-stat" title="Longest streak of back-to-back records carrying the same id. A high number here with no tag actually present points at the gateway/node repeating a value, not at this panel.">
+          <span class="presence-stat-label">longest run</span>
+          <span class="presence-stat-value" id="presence-longest-run">0</span>
+        </div>
+      </div>
+    </div>
+
+    <p class="muted small presence-note">
+      EMPTY = this record carried the &lsquo;-&rsquo; sentinel &middot;
+      NEW = a real id, different from the previous non-empty one &middot;
+      REPEAT &times;N = the same id has now arrived N records in a row
+      (empty records in between are skipped, not counted, and do not break a run).
+    </p>
   </section>
 
   <!-- IMU log: captures ONE ROW PER TELEMETRY RECORD while running - full
