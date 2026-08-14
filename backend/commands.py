@@ -328,7 +328,7 @@ COMMANDS: List[Command] = [
                 label="m - attempt cap",
                 minimum=0,
                 maximum=255,
-                default=20,
+                default=5,
                 help="Hard ceiling on capture attempts (~70 ms each).",
             ),
         ],
