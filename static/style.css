@@ -32,6 +32,17 @@
   --warn:      #ffb347;
   --err:       #ff6b6b;
   --crosshair: #ff4d4d;
+  /* Replay. A SEVENTH state colour, added rather than reused, because every
+     existing one is already spoken for and would lie if borrowed:
+     --accent blue = "a scan is in flight" (and the whole idle/primary-action
+     language), --ok green = "on / found", --warn amber = "scan finished, no
+     tag", --err red = "this failed". "What you are looking at is recorded
+     history, not the collar" is none of those. Orange sits far enough from
+     --warn's amber to not read as a NO TAG verdict at a glance, and the badge
+     that uses it blinks in hard steps rather than the smooth opacity fade
+     rfid-scanning-pulse uses, so the two are distinguishable even out of the
+     corner of an eye. */
+  --replay:    #ff8c2b;
   --mono: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
 }
 
@@ -74,6 +85,12 @@ h3 {
 }
 
 .brand .sub { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+/* Holds whichever control app.js routes here (SLEEP/WAKE, by toggle_group -
+   see loadCommands() in app.js). Empty and collapses to nothing if the
+   registry ever ships without a "power" toggle_group, same as #commands
+   would show nothing rather than a gap. */
+.power-slot { display: flex; align-items: center; }
 
 .conn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
@@ -119,6 +136,15 @@ button.secondary { background: #33333320; }
 button.danger  { background: #6d2530; border-color: #93313f; }
 button.ghost   { background: transparent; color: var(--muted); }
 button.small   { padding: 3px 8px; font-size: 11px; }
+
+/* READ RFID <m>'s idle-enabled state only - green reads as "ready to press",
+   the same green-for-idle convention #btn-scan-auto-toggle uses below.
+   Toggled by refreshRfidOnceAvailability() in app.js, which only applies
+   this class when the button is enabled AND nothing is scanning/reconnecting;
+   the instant either of those stops being true the class comes off and the
+   button falls straight back to plain .primary + the :disabled rule above,
+   both left completely untouched by this rule. */
+button.primary.rfid-once-idle { background: var(--ok); border-color: #3fae6c; color: #06210f; }
 
 /* ---- layout ---- */
 
@@ -255,6 +281,26 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .press-toggle.is-off { background: var(--track-off); border-color: var(--line); color: var(--text); }
 .press-toggle:disabled { opacity: .5; cursor: default; }
 
+/* The .cmd-toggle card that lands in #power-slot (SLEEP/WAKE) is the same
+   markup buildSliderControl()/buildPressToggleControl() produce for the
+   commands grid, just re-homed by app.js. The grid version is a tall
+   vertical card (caption over control over state text) sized to sit among
+   other command cards; the topbar is one shallow row, so here it's laid out
+   sideways instead - caption, control, state text left to right - and the
+   card chrome (background/border/padding meant to distinguish it from
+   neighbouring cards) is dropped since the topbar itself already does that
+   job. */
+.power-slot .cmd-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  min-width: 0;
+  max-width: none;
+  flex-direction: row;
+  gap: 8px;
+}
+.power-slot .toggle-caption { text-align: left; }
+
 .raw { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 12px; }
 .raw label { font-size: 12px; }
 .raw-row { display: flex; gap: 8px; margin-top: 6px; }
@@ -269,7 +315,12 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .panel-subsection { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 14px; }
 
 #imu-panel h2 { justify-content: flex-start; }
-#imu-panel #btn-imu-reset { margin-left: auto; }
+
+/* Reset origin now sits under the gyro bar graph (the thing it actually
+   zeroes) instead of in the h2 next to the "yaw is relative" note. A small
+   top margin separates it from the bar graph above without the weight of a
+   full divider - it's one utility button, not a new subsection. */
+.imu-reset-row { margin-top: 4px; }
 
 .imu-widget {
   display: flex;
@@ -297,6 +348,16 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
    underlying values — the filter kills sample-to-sample jitter, this kills
    the remaining visual "snap" between frames. */
 #yaw-markers, #crosshair { transition: transform .2s ease-out; }
+
+/* Applied for exactly one forced reflow by withoutDialTransition() in app.js,
+   around a transform change that is a TELEPORT rather than motion: dragging
+   the replay scrubber to a different point in the recording, entering replay,
+   or handing the widgets back to live. Those jumps are not the collar
+   turning, and animating them would draw a rotation that never happened -
+   worse, the dial would take the long way round for anything past 180°. The
+   smoothing above is for real, small, sample-to-sample deltas only. */
+#imu-dial.no-anim #yaw-markers,
+#imu-dial.no-anim #crosshair { transition: none; }
 
 #crosshair line { stroke: var(--crosshair); stroke-width: 2.5; stroke-linecap: round; }
 #crosshair circle { fill: var(--crosshair); }
@@ -487,7 +548,11 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 
 /* ---- IMU rolling time graphs ---- */
 
-.imu-charts { display: flex; flex-direction: column; gap: 10px; }
+/* No longer a flex ITEM inside .imu-widget - it's a sibling now, so it gets
+   the panel's whole width instead of whatever was left over beside the dial.
+   That width is the point: these are time-series, and a wider chart is
+   literally more time on screen at the same per-sample resolution. */
+.imu-charts { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
 .chart-card {
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -505,11 +570,124 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .legend-dot.accel-y, .legend-dot.gyro-y { background: var(--ok); }
 .legend-dot.accel-z, .legend-dot.gyro-z { background: var(--warn); }
 
+/* Fluid width, fixed height. The height is duplicated in the canvas's own
+   height="170" attribute in index.html so the backing store and the CSS box
+   agree without JS having to touch it; the WIDTH is deliberately only
+   specified here, with app.js copying clientWidth into canvas.width on load
+   and on every window resize (see syncCanvasWidth()). Setting a width
+   attribute here as well would just be a second source of truth for the same
+   number, and whichever one lost would show up as a horizontally stretched,
+   blurry plot. */
 #chart-accel, #chart-gyro {
   display: block;
+  width: 100%;
+  height: 170px;
   background: var(--inset);
   border: 1px solid var(--line);
   border-radius: 4px;
+}
+
+/* Per-chart transport row: freeze, jump-to-newest, and the window scrollbar.
+   Under the canvas rather than in .chart-head because it operates on the
+   picture, not on the label - and because the scrollbar wants the full
+   canvas width to feel like it maps onto it. */
+.chart-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.chart-btn { min-width: 58px; flex: 0 0 auto; }
+/* Frozen charts say so on their own button, in the replay colour - both are
+   "this is not the live picture", which is exactly the fact a glance needs. */
+.chart-btn.is-paused { color: var(--replay); border-color: var(--replay); }
+.chart-scroll {
+  flex: 1 1 auto;
+  min-width: 60px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.chart-scroll:disabled { opacity: .35; cursor: default; }
+.chart-pos {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  min-width: 150px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- replay mode ---- */
+
+/* Hidden entirely when nothing is being replayed - an always-present badge
+   that merely changes colour is exactly the kind of thing an operator stops
+   seeing after an hour. Present/absent is much harder to tune out. */
+.replay-badge {
+  display: none;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid #ffab63;
+  background: var(--replay);
+  color: #241000;
+}
+.replay-badge.is-active {
+  display: inline-flex;
+  animation: replay-badge-blink 1.6s steps(1, end) infinite;
+}
+/* steps(1, end) = a hard on/off swap, NOT a fade. rfid-scanning-pulse right
+   above is a smooth opacity ramp; making this one visually different in
+   MOTION as well as colour means the two states stay tellable apart even in
+   peripheral vision, which is the whole job of this badge. */
+@keyframes replay-badge-blink {
+  0%,     59.9% { background: var(--replay); color: #241000; border-color: #ffab63; }
+  60%,   100%   { background: #3a1f04;       color: var(--replay); border-color: var(--replay); }
+}
+
+/* Second, quieter signal for the same fact: while a replay owns the widgets,
+   the gauges get an orange dashed surround and the chart cards an orange
+   edge. The badge says it in words; this says it about the specific pixels
+   that are lying, so there is no chance of reading the badge and then
+   trusting the dial next to it anyway. */
+#imu-panel.is-replaying .imu-widget {
+  outline: 1px dashed var(--replay);
+  outline-offset: 8px;
+}
+#imu-panel.is-replaying .chart-card { border-color: var(--replay); }
+
+.replay-section {
+  margin-top: 12px;
+  border-top: 1px dashed var(--line);
+  padding-top: 12px;
+}
+.replay-section h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.replay-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.replay-controls input[type="file"] {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 280px;
+}
+#btn-replay-play { min-width: 74px; }
+#btn-replay-play.is-playing { background: var(--replay); border-color: #ffab63; color: #241000; }
+
+.replay-scrub-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+#replay-scrub {
+  flex: 1 1 auto;
+  height: 16px;
+  accent-color: var(--replay);
+  cursor: pointer;
+}
+#replay-scrub:disabled { opacity: .35; cursor: default; }
+.replay-position {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 200px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* ---- RFID scan history ---- */
@@ -532,6 +710,70 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   width: auto;
   min-width: 150px;
   padding: 7px 14px;
+}
+
+/* Idle/off = green ("ready to start"), running/on = red ("press to stop") -
+   same semantics as a record/transport button. This is scoped to the
+   #btn-scan-auto-toggle ID rather than the .scan-auto-toggle class it shares
+   with #btn-imu-log-toggle (both buttons reuse that class purely for sizing,
+   see the rule above) - a class-level rule here would silently recolor the
+   Record IMU toggle too, which nobody asked for. Also deliberately NOT written
+   against the generic .press-toggle.is-on/.is-off (style.css above), which
+   IMU RUN/HALT and READ RFID LOOP/STOP RFID LOOP also use - overriding those
+   would repaint every press-toggle in the app red/green instead of just
+   this one. */
+#btn-scan-auto-toggle.is-off { background: var(--ok);  border-color: #3fae6c; color: #06210f; }
+#btn-scan-auto-toggle.is-on  { background: var(--err); border-color: #b23a3a; color: #2a0808; }
+
+.scan-auto-wrap { display: flex; align-items: center; gap: 8px; }
+
+/* ---- Auto-Scan countdown ring ---- */
+/* Purely a visual read of the timer scheduleNextAutoScan() (app.js) already
+   owns - this element drives nothing itself. Hidden by default (no
+   "is-active" class) so an idle Auto-Scan button doesn't sit next to a ring
+   that isn't counting anything down; app.js adds "is-active" only while
+   autoScanOn is true and removes it (plus stops the sweep) the instant it's
+   turned off. The sweep is a plain CSS @keyframes animation whose duration
+   app.js sets to match the configured period and RESTARTS (remove + force
+   reflow + re-add - see restartCountdownRing() in app.js) every time
+   scheduleNextAutoScan() computes a fresh fire time, so a period change or a
+   skipped tick can never leave the ring quietly drifting out of sync with
+   the real timer. The "Ns" text next to it is intentionally on its own
+   setInterval in app.js rather than read off the animation - CSS animation
+   progress isn't something JS can cheaply sample, and the text needs
+   second-level precision independent of however smooth/coarse the visual
+   sweep is. */
+.auto-countdown {
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+.auto-countdown.is-active { display: flex; }
+.auto-countdown-track { fill: none; stroke: var(--track-off); stroke-width: 3; }
+.auto-countdown-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  /* 2*pi*14 (the circle's own r="14" in the SVG) - the ring's full length,
+     so a dash-offset animation from 0 to this value sweeps exactly once
+     around, no more and no less. */
+  stroke-dasharray: 87.96;
+  stroke-dashoffset: 0;
+  transform: rotate(-90deg);   /* sweep starts at 12 o'clock, not 3 o'clock */
+  transform-origin: 16px 16px; /* the SVG's own center (viewBox 0 0 32 32) */
+}
+@keyframes auto-countdown-sweep {
+  from { stroke-dashoffset: 0; }     /* full ring: a fresh period just started */
+  to   { stroke-dashoffset: 87.96; } /* empty ring: the period just elapsed */
+}
+.auto-countdown-text {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 24px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .scan-table-wrap {
@@ -570,96 +812,6 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .scan-table td.scan-result-found { color: var(--ok); font-weight: 600; }
 .scan-table td.scan-result-none  { color: var(--warn); font-weight: 600; }
 .scan-table td.scan-source { color: var(--muted); text-transform: uppercase; font-size: 10px; }
-
-/* ---- tag presence detector ----
-   Same card vocabulary as .highlight-card above (inset tray, coloured left
-   edge carrying the state) so it reads as part of the same family without
-   being wired to it. Colour meanings, consistent with the rest of the
-   palette: grey/--dim = nothing on the wire (EMPTY, the normal resting
-   state), green/--ok = a genuinely new id (NEW), amber/--warn = the same id
-   arriving again (REPEAT) - amber because a repeat is not an error, it's
-   the thing the operator is here to notice. No box-shadow, same rule as
-   everywhere else in this file. */
-
-#tag-presence-panel h2 #btn-presence-reset { margin-left: auto; }
-
-.presence-row {
-  display: flex;
-  align-items: stretch;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.presence-card {
-  background: var(--inset);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--dim);
-  border-radius: 6px;
-  padding: 10px 14px;
-  min-width: 280px;
-  flex: 1 1 280px;
-}
-.presence-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
-}
-.presence-state {
-  font-family: var(--mono);
-  font-size: 22px;
-  font-weight: 700;
-  margin-top: 4px;
-  color: var(--dim);
-  font-variant-numeric: tabular-nums;
-}
-/* Fixed-ish line so "-" -> a 15-digit FDX-B id doesn't jog the layout, and
-   the id is shown in full rather than ellipsised - it's the value being
-   diagnosed. */
-.presence-id {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 4px;
-  min-height: 16px;
-  overflow-wrap: anywhere;
-}
-
-.presence-card.presence-idle   { border-left-color: var(--dim); }
-.presence-card.presence-empty  { border-left-color: var(--dim); }
-.presence-card.presence-new    { border-left-color: var(--ok); }
-.presence-card.presence-repeat { border-left-color: var(--warn); }
-
-.presence-card.presence-empty  .presence-state { color: var(--dim); }
-.presence-card.presence-new    .presence-state { color: var(--ok); }
-.presence-card.presence-repeat .presence-state { color: var(--warn); }
-
-.presence-stats {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.presence-stat {
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px 12px;
-  min-width: 78px;
-  text-align: center;
-}
-.presence-stat-label {
-  display: block;
-  font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
-}
-.presence-stat-value {
-  display: block;
-  font-family: var(--mono); font-size: 17px; font-weight: 700; color: var(--text);
-  margin-top: 2px;
-  font-variant-numeric: tabular-nums;
-}
-.presence-stat-value.ink-new    { color: var(--ok); }
-.presence-stat-value.ink-repeat { color: var(--warn); }
-.presence-stat-value.ink-empty  { color: var(--dim); }
-
-.presence-note { margin: 10px 0 0; line-height: 1.5; }
 
 /* ---- telemetry card ---- */
 

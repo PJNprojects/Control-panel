@@ -28,6 +28,13 @@
     <span class="sub">ESP32 gateway &rarr; CattleNode collar &middot; {{ baud }} baud</span>
   </div>
 
+  <!-- SLEEP/WAKE lands here, not in the commands grid below - built by
+       app.js same as every other command, just routed to this slot because
+       its toggle_group is "power" (see loadCommands() in app.js). Empty in
+       the HTML for the same reason #commands is: this file doesn't know the
+       control exists until the registry says so. -->
+  <div id="power-slot" class="power-slot"></div>
+
   <div class="conn">
     <select id="port-select" aria-label="Serial port">
       <option value="">Scanning ports&hellip;</option>
@@ -52,22 +59,19 @@
       <p class="muted">Loading command registry&hellip;</p>
     </div>
 
-    <div class="raw">
-      <label for="raw-text">Raw command
-        <span class="muted">&mdash; sent verbatim, for anything without a button yet</span>
-      </label>
-      <div class="raw-row">
-        <input id="raw-text" type="text" maxlength="47" autocomplete="off"
-               placeholder="e.g. READ RFID 3 10">
-        <button id="btn-raw" class="secondary">Send</button>
-      </div>
-      <p class="muted small" id="raw-hint"></p>
-    </div>
-
     <div id="imu-panel" class="panel-subsection">
     <h2>IMU Orientation
+      <!-- Shown ONLY while a recording is being played back through these
+           widgets (see the Replay section in the Record IMU panel below).
+           Deliberately loud and deliberately orange: blue+pulse is already
+           spoken for by SCANNING (rfid-scanning-pulse), green by "on/found",
+           amber-ish red by errors - "what's on this dial is history, not the
+           collar right now" is a claim that must never be mistaken for any
+           of those, so it gets its own colour token (--replay) and its own
+           hard-step blink rather than the smooth opacity fade SCANNING uses. -->
+      <span id="imu-replay-badge" class="replay-badge"
+            title="These widgets are being driven by a loaded recording, not by the collar. Press Stop in the Record IMU panel to hand them back to live telemetry.">REPLAY</span>
       <span class="muted small" id="imu-meta">yaw is relative &amp; drifts &mdash; no magnetometer on the collar</span>
-      <button id="btn-imu-reset" class="ghost small">Reset origin</button>
     </h2>
     <div class="imu-widget">
       <svg id="imu-dial" viewBox="0 0 220 220" width="220" height="220" aria-label="Yaw dial with pitch/roll crosshair">
@@ -140,6 +144,15 @@
         </div>
       </div>
 
+      <!-- Was in the IMU Orientation h2, next to the "yaw is relative" note.
+           Moved down here, right under the thing it actually resets (the
+           gyro/yaw integration feeding the dial and bars above) rather than
+           sitting in the header rail - same id/class, app.js finds it by id
+           either way. -->
+      <div class="imu-reset-row">
+        <button id="btn-imu-reset" class="ghost small">Reset origin</button>
+      </div>
+
       <!-- Temp + RFID, pulled straight off the same telemetry record,
            called out big since they're the two "did something just happen"
            signals an operator scans for at a glance. -->
@@ -155,30 +168,66 @@
         </div>
       </div>
 
-      <!-- Rolling window, not a log — bounded arrays redrawn to a canvas, so
-           it stays cheap no matter how long the session runs. -->
-      <div class="imu-charts">
-        <div class="chart-card">
-          <div class="chart-head">
-            <span class="cluster-label">accel m/s&sup2; &mdash; recent</span>
-            <span class="chart-legend">
-              <span class="legend-dot accel-x"></span>x
-              <span class="legend-dot accel-y"></span>y
-              <span class="legend-dot accel-z"></span>z
-            </span>
-          </div>
-          <canvas id="chart-accel" width="260" height="90"></canvas>
+    </div>
+
+    <!-- Rolling window, not a log — bounded arrays redrawn to a canvas, so
+         it stays cheap no matter how long the session runs.
+
+         Moved OUT of .imu-widget (which is a wrapping flex row of fixed-size
+         gauges) and up to a direct child of #imu-panel, because these two are
+         the only things here that want the panel's full width rather than
+         "however much is left over next to the dial". The canvases have no
+         width attribute on purpose: app.js sizes the backing store to the
+         element's own clientWidth (and re-sizes it on window resize), so the
+         drawing buffer and the CSS box stay 1:1 at any panel width instead of
+         the browser stretching a 260px bitmap.
+
+         Each chart now shows a WINDOW into a much larger retained buffer, not
+         the whole buffer - see IMU_CHART_WINDOW / IMU_HISTORY_LEN in app.js.
+         The foot row is the control surface for that window: freeze the
+         redraw, scroll the window back through retained history, jump back to
+         the newest samples. -->
+    <div class="imu-charts">
+      <div class="chart-card">
+        <div class="chart-head">
+          <span class="cluster-label">accel m/s&sup2;</span>
+          <span class="chart-legend">
+            <span class="legend-dot accel-x"></span>x
+            <span class="legend-dot accel-y"></span>y
+            <span class="legend-dot accel-z"></span>z
+          </span>
         </div>
-        <div class="chart-card">
-          <div class="chart-head">
-            <span class="cluster-label">gyro rad/s &mdash; recent</span>
-            <span class="chart-legend">
-              <span class="legend-dot gyro-x"></span>x
-              <span class="legend-dot gyro-y"></span>y
-              <span class="legend-dot gyro-z"></span>z
-            </span>
-          </div>
-          <canvas id="chart-gyro" width="260" height="90"></canvas>
+        <canvas id="chart-accel" height="170"></canvas>
+        <div class="chart-foot">
+          <button id="btn-chart-accel-pause" class="ghost small chart-btn"
+                  title="Freeze THIS chart's redraw. Samples keep arriving and every other widget keeps updating - only the drawing stops, so a moment can be studied without it scrolling away underneath you.">Pause</button>
+          <button id="btn-chart-accel-live" class="ghost small chart-btn"
+                  title="Un-freeze and jump the window back to the newest samples.">Live</button>
+          <input id="scroll-chart-accel" class="chart-scroll" type="range" min="0" max="0" value="0" step="1"
+                 aria-label="Scroll the accel chart through retained history"
+                 title="Scrolls the visible window back through the retained history buffer. Works while paused AND while live; dropping it at the far right resumes following the newest samples.">
+          <span id="chart-accel-pos" class="chart-pos muted small">-</span>
+        </div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head">
+          <span class="cluster-label">gyro rad/s</span>
+          <span class="chart-legend">
+            <span class="legend-dot gyro-x"></span>x
+            <span class="legend-dot gyro-y"></span>y
+            <span class="legend-dot gyro-z"></span>z
+          </span>
+        </div>
+        <canvas id="chart-gyro" height="170"></canvas>
+        <div class="chart-foot">
+          <button id="btn-chart-gyro-pause" class="ghost small chart-btn"
+                  title="Freeze THIS chart's redraw. Samples keep arriving and every other widget keeps updating - only the drawing stops, so a moment can be studied without it scrolling away underneath you.">Pause</button>
+          <button id="btn-chart-gyro-live" class="ghost small chart-btn"
+                  title="Un-freeze and jump the window back to the newest samples.">Live</button>
+          <input id="scroll-chart-gyro" class="chart-scroll" type="range" min="0" max="0" value="0" step="1"
+                 aria-label="Scroll the gyro chart through retained history"
+                 title="Scrolls the visible window back through the retained history buffer. Works while paused AND while live; dropping it at the far right resumes following the newest samples.">
+          <span id="chart-gyro-pos" class="chart-pos muted small">-</span>
         </div>
       </div>
     </div>
@@ -209,95 +258,71 @@
         m
         <input id="scan-m-input" type="number" min="0" max="255" value="20">
       </label>
-      <button id="btn-scan-auto-toggle" class="press-toggle scan-auto-toggle"
-              title="Fires a READ RFID 1 {m} on the period above and logs the result, found or not. Runs in THIS browser tab only - it stops if the tab is closed, and browsers slow down timers in a backgrounded tab, so this is a bench-side convenience, not a walk-away scheduler.">
-        Start Auto-Scan
-      </button>
+      <div class="scan-auto-wrap">
+        <button id="btn-scan-auto-toggle" class="press-toggle scan-auto-toggle"
+                title="Fires a READ RFID 1 {m} on the period above and logs the result, found or not. Runs in THIS browser tab only - it stops if the tab is closed, and browsers slow down timers in a backgrounded tab, so this is a bench-side convenience, not a walk-away scheduler.">
+          Start Auto-Scan
+        </button>
+
+        <!-- Countdown ring: purely a visual read of the SAME timer
+             scheduleNextAutoScan() already drives (see app.js) - not an
+             independent clock. Hidden entirely while auto-scan is off (see
+             .auto-countdown in style.css); app.js toggles the "is-active"
+             class and restarts the sweep animation every time a fresh fire
+             time is computed, so the ring can never drift out of sync with
+             the real setTimeout underneath it. -->
+        <div id="scan-auto-countdown" class="auto-countdown" title="Time remaining until the next auto-scan fires">
+          <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+            <circle class="auto-countdown-track" cx="16" cy="16" r="14"></circle>
+            <circle id="auto-countdown-ring" class="auto-countdown-ring" cx="16" cy="16" r="14"></circle>
+          </svg>
+          <span id="auto-countdown-text" class="auto-countdown-text">-</span>
+        </div>
+      </div>
     </div>
 
     <div class="scan-table-wrap">
       <table class="scan-table">
         <thead>
-          <tr><th>Time</th><th>Tag ID</th><th>Temp</th><th>Result</th><th>Source</th><th>GW ts</th></tr>
+          <tr><th>#</th><th>Time</th><th>Tag ID</th><th>Temp</th><th>Result</th><th>Source</th><th>GW ts</th></tr>
         </thead>
         <tbody id="scan-history-body">
-          <tr><td colspan="6" class="muted">No scans logged yet.</td></tr>
+          <tr><td colspan="7" class="muted">No scans logged yet.</td></tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <!-- Tag Presence Detector: a READ-ONLY window onto the raw rfid_id field
-       of the telemetry stream, classified once per record. It exists to
-       answer one diagnostic question the scan-oriented panels above can't:
-       is the wire itself handing us the same tag id over and over?
-       Deliberately decoupled - it never writes to Scan History, never
-       touches the live RFID/temp cards, and holds its own last-seen value
-       purely to compare consecutive records. See the block above
-       updateTagPresence() in app.js. -->
-  <section class="panel" id="tag-presence-panel">
-    <h2>Tag Presence Detector
-      <span class="muted small" id="presence-meta">no records yet</span>
-      <button id="btn-presence-reset" class="ghost small"
-              title="Forget the last-seen raw id and zero the counters. A view reset only - it sends nothing to the collar and does not touch Scan History or the RFID card.">Reset</button>
-    </h2>
-
-    <div class="presence-row">
-      <div class="presence-card presence-idle" id="presence-card">
-        <div class="presence-label">current record &mdash; raw rfid_id</div>
-        <div class="presence-state" id="presence-state">-</div>
-        <div class="presence-id" id="presence-id">waiting for the first record&hellip;</div>
-      </div>
-
-      <div class="presence-stats">
-        <div class="presence-stat">
-          <span class="presence-stat-label">new</span>
-          <span class="presence-stat-value ink-new" id="presence-count-new">0</span>
-        </div>
-        <div class="presence-stat">
-          <span class="presence-stat-label">repeat</span>
-          <span class="presence-stat-value ink-repeat" id="presence-count-repeat">0</span>
-        </div>
-        <div class="presence-stat">
-          <span class="presence-stat-label">empty</span>
-          <span class="presence-stat-value ink-empty" id="presence-count-empty">0</span>
-        </div>
-        <div class="presence-stat" title="Longest streak of back-to-back records carrying the same id. A high number here with no tag actually present points at the gateway/node repeating a value, not at this panel.">
-          <span class="presence-stat-label">longest run</span>
-          <span class="presence-stat-value" id="presence-longest-run">0</span>
-        </div>
-      </div>
-    </div>
-
-    <p class="muted small presence-note">
-      EMPTY = this record carried the &lsquo;-&rsquo; sentinel &middot;
-      NEW = a real id, different from the previous non-empty one &middot;
-      REPEAT &times;N = the same id has now arrived N records in a row
-      (empty records in between are skipped, not counted, and do not break a run).
-    </p>
-  </section>
-
-  <!-- IMU log: captures ONE ROW PER TELEMETRY RECORD while running - full
+  <!-- Record IMU: captures ONE ROW PER TELEMETRY RECORD while running - full
        serial resolution, not a periodic sample - then auto-saves (downloads
        the CSV + clears the buffer) on the interval below, so a long run
        doesn't sit unsaved in a tab that could be closed by accident.
-       "Download CSV" / stopping the log do the same save-and-clear on
-       demand. Still browser-tab-only - see the tooltip on the toggle. -->
+       "Save Until Now" / stopping the recording do the same save-and-clear on
+       demand. Still browser-tab-only - see the tooltip on the toggle.
+
+       ONE PANEL, TWO HALVES of the same tape-deck idea: the top half writes a
+       recording out (record / save / the live buffer table), the bottom half
+       reads one back in and plays it through the IMU widgets above. They share
+       a file format and nothing else - replay never touches the record buffer
+       and recording never touches replay - but they belong together, because
+       the only thing that produces a file replay can open is the recorder
+       three inches above it. -->
   <section class="panel" id="imu-log-panel">
-    <h2>IMU Log
+    <h2>Record IMU
       <span class="muted small" id="imu-log-meta">0 samples buffered</span>
       <button id="btn-imu-log-clear" class="ghost small" title="Discard the buffered samples WITHOUT saving them.">Clear</button>
-      <button id="btn-imu-log-download" class="ghost small" title="Save now: downloads the buffered samples as CSV and clears the buffer.">Save Now (CSV)</button>
+      <button id="btn-imu-log-download" class="ghost small"
+              title="Cuts the tape without stopping the reel: downloads everything buffered SO FAR as a CSV and empties the buffer, while recording carries straight on into a fresh buffer. Nothing stops, nothing is lost - the next file simply picks up where this one ends.">Save Until Now</button>
     </h2>
 
     <div class="scan-controls">
-      <label class="param" title="While running, the buffer is auto-saved (CSV downloaded, then cleared) on this interval.">
+      <label class="param" title="While recording, the buffer is auto-saved (CSV downloaded, then cleared) on this interval.">
         auto-save every (min)
         <input id="imu-log-period-input" type="number" min="1" max="120" value="5">
       </label>
       <button id="btn-imu-log-toggle" class="press-toggle scan-auto-toggle"
-              title="Logs EVERY telemetry record - full serial resolution, nothing skipped - and auto-saves the buffer on the interval above. Stopping also saves whatever's left. Runs in THIS browser tab only - it stops if the tab is closed.">
-        Start IMU Log
+              title="Records EVERY telemetry record - full serial resolution, nothing skipped - and auto-saves the buffer on the interval above. Pressing it again stops AND saves whatever's left. Runs in THIS browser tab only - it stops if the tab is closed.">
+        Record IMU
       </button>
     </div>
 
@@ -305,15 +330,52 @@
       <table class="scan-table">
         <thead>
           <tr>
-            <th>Time</th><th>Yaw</th><th>Pitch</th><th>Roll</th><th>|g|</th>
+            <!-- Unix epoch milliseconds, as a plain integer - NOT the
+                 human DD-MM-YYYY the Scan History table uses. Different
+                 table, different job: a scan row is read by a person at the
+                 bench, an IMU sample row is read against the CSV (which now
+                 carries the identical integer) and differenced to work out
+                 real sample intervals. A formatted string would have to be
+                 mentally un-formatted to do that. -->
+            <th>Time (epoch ms)</th><th>Yaw</th><th>Pitch</th><th>Roll</th><th>|g|</th>
             <th>ax</th><th>ay</th><th>az</th><th>gx</th><th>gy</th><th>gz</th>
-            <th>Temp</th><th>RFID ID</th>
           </tr>
         </thead>
         <tbody id="imu-log-body">
-          <tr><td colspan="13" class="muted">No samples logged yet.</td></tr>
+          <tr><td colspan="11" class="muted">No samples logged yet.</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Replay: the read side of the same tape. Entirely client-side - a
+         FileReader and an <input type="file">, no upload, no Flask route, no
+         file ever leaves the machine. It drives EXACTLY the widgets live
+         telemetry drives (dial, crosshair, gravity bar, gyro bars, both
+         charts) through one shared applyImuSample() in app.js, so a replayed
+         frame and a live frame can never render differently. It touches
+         nothing else: Latest Reading, the Log panel and Scan History all
+         carry on showing the real collar while a replay plays. -->
+    <div class="replay-section">
+      <h3>Replay a saved recording
+        <span class="muted small">&mdash; drives the IMU widgets above; live telemetry keeps updating everything else</span>
+      </h3>
+
+      <div class="replay-controls">
+        <input id="replay-file" type="file" accept=".csv,text/csv"
+               title="Open a CSV written by Record IMU above. Files without the leading '#' metadata line (older exports, hand-edited files) still work - playback timing then comes from the gap between each row's own timestamp instead of the recorded average rate.">
+        <button id="btn-replay-play" class="secondary" disabled
+                title="Step through the loaded recording at the constant rate its metadata line recorded (or at each row's own timestamp gap if there is no metadata line).">Play</button>
+        <button id="btn-replay-stop" class="ghost small" disabled
+                title="End the replay and hand the IMU widgets straight back to live telemetry. The loaded file stays loaded - press Play to run it again.">Stop</button>
+        <span id="replay-meta" class="muted small">no recording loaded</span>
+      </div>
+
+      <div class="replay-scrub-row">
+        <input id="replay-scrub" type="range" min="0" max="0" value="0" step="1" disabled
+               aria-label="Position in the loaded recording"
+               title="Position in the recording. Advances by itself during playback and can be dragged at any time, playing or paused - the widgets jump to that exact sample as you drag.">
+        <span id="replay-position" class="replay-position">no recording loaded</span>
+      </div>
     </div>
   </section>
 
@@ -335,6 +397,24 @@
         <button id="btn-clear" class="ghost small">Clear</button>
       </h2>
       <div id="log" class="log"></div>
+
+      <!-- Raw-command escape hatch — moved here from the Commands panel.
+           Still not a command, a mechanism: it exists so an unregistered
+           command can be tried without a code change (see the file-level
+           comment at the top of this document). Living under the log now
+           puts "type something, watch what comes back" in one place instead
+           of split across two panels. -->
+      <div class="raw">
+        <label for="raw-text">Raw command
+          <span class="muted">&mdash; sent verbatim, for anything without a button yet</span>
+        </label>
+        <div class="raw-row">
+          <input id="raw-text" type="text" maxlength="47" autocomplete="off"
+                 placeholder="e.g. READ RFID 3 10">
+          <button id="btn-raw" class="secondary">Send</button>
+        </div>
+        <p class="muted small" id="raw-hint"></p>
+      </div>
     </section>
 
   </div>
