@@ -305,6 +305,7 @@
   }
 
   function applyStatus(status) {
+    var wasConnected = connected;
     connected = !!(status && status.connected);
     statusDot.className = "dot " + (connected ? "up" : "down");
     if (connected) {
@@ -319,6 +320,19 @@
       btnConnect.textContent = "Connect";
       btnConnect.className = "primary";
       portSelect.disabled = false;
+    }
+
+    // armReadinessCheck()/resetReadinessCheck() are declared below (hoisted,
+    // same pattern as rfidScanPending() elsewhere in this file) - this is
+    // the ONLY place `connected` changes, so it is the one correct place to
+    // react to it changing. Only fire on an actual transition: this function
+    // is also called by "status" SSE events that just confirm the existing
+    // state, and re-arming on every one of those would restart the
+    // checklist from scratch for no reason.
+    if (connected && !wasConnected) {
+      armReadinessCheck();
+    } else if (!connected && wasConnected) {
+      resetReadinessCheck();
     }
   }
 
@@ -344,6 +358,130 @@
   });
 
   btnRefresh.addEventListener("click", refreshPorts);
+
+  // ---------------------------------------------------------------------
+  //  Startup readiness gate
+  // ---------------------------------------------------------------------
+  //  The serial port opening proves the OS-level COM port is there. It
+  //  proves nothing about whether the gateway on the far end is actually
+  //  alive, or whether ITS BLE link to the collar is up - and a command
+  //  sent before either is true either gets rejected outright (no serial
+  //  link) or reaches the gateway and comes back as a silent
+  //  "# cmd: ... -> FAILED (not connected)" log line. Functionally
+  //  harmless, but it invites an operator to press buttons into a system
+  //  that isn't listening yet with no clear signal why nothing happened.
+  //
+  //  Three checks, gating every command control (RFID/POWER/IMU + the raw
+  //  box) via the .not-ready class on their containers - see that class's
+  //  own comment in style.css for why pointer-events and not the disabled
+  //  attribute:
+  //
+  //    1. port    - connected (already tracked; the status dot already
+  //                 shows this, the readiness list just repeats it for one
+  //                 place to look).
+  //    2. gateway - ANY '#' log line seen since this connect. The boot
+  //                 banner if the gateway just booted, or the first ack/
+  //                 status line otherwise if it was already running - both
+  //                 prove real bytes are flowing, which a merely-open COM
+  //                 port does not.
+  //    3. collar  - a telemetry record has arrived with ble_connected=1,
+  //                 proving the GATEWAY's own link to the collar is up too,
+  //                 not just the PC<->gateway serial hop.
+  //
+  //  Bounded, not a permanent lock. If the checklist hasn't finished within
+  //  READINESS_TIMEOUT_MS, give up waiting and unlock anyway with a visible
+  //  warning - a collar that's simply not powered on yet would otherwise
+  //  leave the whole panel stuck forever. Same "never hang, fail open with
+  //  a warning" philosophy as the BLE reconnect watchdog above.
+  // ---------------------------------------------------------------------
+
+  var READINESS_TIMEOUT_MS = 15000;
+
+  var readinessTargets = [commandsBox, powerSlot, rawText.closest(".raw")].filter(Boolean);
+  var readinessPanelEl   = el("readiness-panel");
+  var readinessPortItem    = el("readiness-port");
+  var readinessGatewayItem = el("readiness-gateway");
+  var readinessBleItem     = el("readiness-ble");
+
+  var readinessGatewaySeen = false;
+  var readinessBleSeen     = false;
+  var readinessTimeoutId   = null;
+  var panelReady           = false; // not consulted directly - applyReadinessGate() below is the only writer of .not-ready
+
+  function setReadinessItemState(itemEl, state) {
+    // state: "pending" | "done" | "timeout" - see the three CSS rules this maps to.
+    if (!itemEl) { return; }
+    itemEl.classList.remove("readiness-pending", "readiness-done", "readiness-timeout");
+    itemEl.classList.add("readiness-" + state);
+  }
+
+  function applyReadinessGate() {
+    panelReady = connected && readinessGatewaySeen && readinessBleSeen;
+    readinessTargets.forEach(function (target) { target.classList.toggle("not-ready", !panelReady); });
+    if (readinessPanelEl) { readinessPanelEl.hidden = !connected || panelReady; }
+    setReadinessItemState(readinessPortItem, connected ? "done" : "pending");
+    setReadinessItemState(readinessGatewayItem, readinessGatewaySeen ? "done" : "pending");
+    setReadinessItemState(readinessBleItem, readinessBleSeen ? "done" : "pending");
+  }
+
+  function armReadinessCheck() {
+    readinessGatewaySeen = false;
+    readinessBleSeen     = false;
+    applyReadinessGate();
+    if (readinessTimeoutId !== null) { clearTimeout(readinessTimeoutId); }
+    readinessTimeoutId = setTimeout(function () {
+      readinessTimeoutId = null;
+      if (panelReady) { return; } // finished on its own before the timeout - nothing to do
+      var missing = [];
+      if (!readinessGatewaySeen) { missing.push("no data seen from the gateway"); }
+      if (!readinessBleSeen)     { missing.push("collar BLE link never confirmed"); }
+      localNote(
+        "readiness check timed out after " + (READINESS_TIMEOUT_MS / 1000) +
+        "s (" + missing.join("; ") + ") - unlocking controls anyway", "error"
+      );
+      // Fail OPEN, not closed - see the block comment above. Mark whichever
+      // items never actually confirmed as "timeout" (amber), not "done"
+      // (green): the controls unlock either way, but the checklist should
+      // not claim something was confirmed that never was.
+      setReadinessItemState(readinessGatewayItem, readinessGatewaySeen ? "done" : "timeout");
+      setReadinessItemState(readinessBleItem, readinessBleSeen ? "done" : "timeout");
+      readinessGatewaySeen = true;
+      readinessBleSeen     = true;
+      panelReady = connected;
+      readinessTargets.forEach(function (target) { target.classList.toggle("not-ready", !panelReady); });
+      if (readinessPanelEl) { readinessPanelEl.hidden = false; } // stays visible, now showing the amber items
+    }, READINESS_TIMEOUT_MS);
+  }
+
+  function resetReadinessCheck() {
+    if (readinessTimeoutId !== null) { clearTimeout(readinessTimeoutId); readinessTimeoutId = null; }
+    readinessGatewaySeen = false;
+    readinessBleSeen     = false;
+    applyReadinessGate();
+  }
+
+  // Called from the stream handler's "log" branch, unconditionally - any
+  // '#' line at all is the signal, not any particular line's content.
+  function markGatewayResponding() {
+    if (readinessGatewaySeen || !connected) { return; }
+    readinessGatewaySeen = true;
+    applyReadinessGate();
+  }
+
+  // Called from the stream handler's "telemetry" branch, only once that
+  // record's own ble_connected field says 1 - see the caller.
+  function markCollarLinkUp() {
+    if (readinessBleSeen || !connected) { return; }
+    readinessBleSeen = true;
+    applyReadinessGate();
+  }
+
+  // Starting state: disconnected, nothing to gate visibly yet (the panel
+  // stays hidden - applyReadinessGate() also runs here so .not-ready is
+  // already correctly applied to the command containers before the first
+  // connect, rather than relying on their own initial DOM state to happen
+  // to match).
+  applyReadinessGate();
 
   // ---------------------------------------------------------------------
   //  Command panel — generated, not written
@@ -2819,8 +2957,14 @@
         // A telemetry record arriving at all is direct proof the link is up
         // - independent of and a bit more certain than matching log text.
         if (bleReconnecting) { setBleReconnecting(false); }
+        // Gated on THIS record's own flag, not just "a record arrived" -
+        // ble_connected=1 is the one field that specifically means the
+        // GATEWAY's link to the collar (not just this tab's link to the
+        // gateway) is up. See markCollarLinkUp()'s own comment.
+        if (event.data.ble_connected === 1) { markCollarLinkUp(); }
         renderTelemetry(event.data);
       } else if (event.type === "log") {
+        markGatewayResponding();
         watchLogForBleState(event.text);
         appendLog(event);
       } else if (event.type === "status") {

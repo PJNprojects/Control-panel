@@ -104,6 +104,50 @@ h3 {
 
 .status-text { color: var(--muted); font-size: 12px; font-family: var(--mono); }
 
+/* ---- startup readiness gate ---- */
+/* See the readiness* functions in app.js for the full reasoning: a serial
+   port opening proves nothing about the gateway or collar being reachable,
+   so the command controls stay locked (via .not-ready below) until both are
+   confirmed, or a bounded timeout gives up and unlocks anyway. */
+
+.readiness-panel {
+  background: var(--inset);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+.readiness-title { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.readiness-list { list-style: none; margin: 0; padding: 0; display: flex; gap: 18px; flex-wrap: wrap; }
+.readiness-item {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; font-family: var(--mono); color: var(--muted);
+}
+.readiness-item::before {
+  content: ""; width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--dim); transition: background .2s;
+}
+/* Still waiting - dim dot, same "not yet" language as .dot.down. */
+.readiness-item.readiness-pending::before { background: var(--dim); }
+/* Confirmed - green, same "up"/"found" language every other dot in this
+   file already uses for "this is genuinely true now". */
+.readiness-item.readiness-done { color: var(--text); }
+.readiness-item.readiness-done::before { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+/* The timeout gave up waiting on this one specifically and unlocked anyway
+   - amber, not green: distinguishes "confirmed" from "assumed, unconfirmed"
+   at a glance, same reasoning --warn already carries for a NO TAG verdict
+   (a real outcome, just not the one being hoped for) elsewhere in this file. */
+.readiness-item.readiness-timeout::before { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+
+/* Locks the command controls out entirely (not just visually dims them)
+   until the readiness gate clears. pointer-events, not the disabled
+   attribute: this has to layer on top of every control's OWN state-driven
+   enabling/disabling (bleReconnecting, in-flight sends, press-toggle state)
+   without touching any of it - lifting .not-ready later must reveal
+   whatever state a control was already correctly in, not a state this rule
+   invented. */
+.not-ready { pointer-events: none; opacity: .4; }
+
 /* ---- controls ---- */
 
 select, input[type="text"], input[type="number"] {

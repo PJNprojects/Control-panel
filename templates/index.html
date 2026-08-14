@@ -53,6 +53,24 @@
        already used inside this panel), rather than two full bordered
        cards stacked with a gap between them. -->
   <section class="panel" id="command-imu-panel">
+    <!-- Startup readiness gate. Hidden while disconnected (nothing to check
+         yet - the status dot above already says "Disconnected") and hidden
+         again once all three items are confirmed. Shown in between: the
+         window where the serial port is open but nothing has proven the
+         gateway is actually talking, or that ITS link to the collar is up -
+         see the block comment on the readiness functions in app.js for why
+         that gap matters and what closes it. `hidden` here is the real
+         attribute (not a class), so nothing needs a CSS rule just to get
+         the default state right on first paint. -->
+    <div id="readiness-panel" class="readiness-panel" hidden>
+      <div class="readiness-title">Checking the link before handing over control&hellip;</div>
+      <ul class="readiness-list">
+        <li id="readiness-port" class="readiness-item readiness-pending">Serial port open</li>
+        <li id="readiness-gateway" class="readiness-item readiness-pending">Gateway responding</li>
+        <li id="readiness-ble" class="readiness-item readiness-pending">Collar BLE link up</li>
+      </ul>
+    </div>
+
     <!-- Built from /api/commands. Intentionally empty in the HTML. -->
     <h2>Commands</h2>
     <div id="commands" class="commands">
