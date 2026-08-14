@@ -157,12 +157,20 @@
         localNote("BLE reconnect watchdog timed out - re-enabling READ RFID as a fail-safe", "error");
       }, BLE_RECONNECT_WATCHDOG_MS);
     } else {
-      // The link just settled. A scan whose attempt-timeout already elapsed
-      // may have been held back waiting for exactly this (see the
-      // bleReconnecting gate in renderRfidCards()) - resolve it now instead
-      // of letting it sit until the next 500ms poll tick. Latency only: the
-      // poll would have caught it anyway, which is what keeps a held scan
-      // from ever hanging if this nudge is ever missed.
+      // The link just settled - record when, so renderRfidCards()'s timeout
+      // branch can give the actual resolving packet a short grace window to
+      // arrive before it's allowed to conclude NO TAG. See
+      // rfidLinkSettledAtMs's own comment for the bug this fixes: "the link
+      // is back" is not the same fact as "this scan's result has arrived",
+      // and treating them as the same fact was silently losing real finds.
+      rfidLinkSettledAtMs = Date.now();
+
+      // A scan whose attempt-timeout already elapsed may have been held back
+      // waiting for exactly this (see the gate in renderRfidCards()) -
+      // resolve it now instead of letting it sit until the next 500ms poll
+      // tick. Latency only: the poll would have caught it anyway, which is
+      // what keeps a held scan from ever hanging if this nudge is ever
+      // missed.
       //
       // Deferred by a tick ON PURPOSE. One of the callers of
       // setBleReconnecting(false) is the telemetry branch of the stream
@@ -172,7 +180,11 @@
       // the tag that was right there, which is precisely the misverdict
       // this whole change is meant to remove. Letting the current record
       // finish first means the FOUND path gets first refusal, and this
-      // then finds nothing pending.
+      // then finds nothing pending. The other caller is the "command
+      // channel ready" LOG LINE, which has no such record about to run
+      // right after it - that's exactly the case rfidLinkSettledAtMs's
+      // grace window now covers, since this deferred call alone was never
+      // enough to protect it.
       setTimeout(function () { renderRfidCards(Date.now()); }, 0);
     }
   }
@@ -967,6 +979,41 @@
   // forever if the disconnect signal is somehow missed.
   var rfidPendingSawDisconnect = false;
 
+  // 2026-08-14 ADDITION - fixes a real bug: scans that genuinely found a tag
+  // were being logged as NO TAG anyway, even though the card updated to show
+  // the tag correctly. Root cause was a gap this variable closes.
+  //
+  // "command channel ready" (which flips bleReconnecting back to false) is
+  // printed by the GATEWAY the moment it finishes re-subscribing to notify -
+  // that happens BEFORE the collar has necessarily sent its first fresh
+  // packet post-reconnect, let alone before that packet has been printed to
+  // serial and reached this tab as an SSE "telemetry" event. So
+  // bleReconnecting going false is proof the LINK is back, not proof the
+  // scan's actual result has arrived yet - there is a real, if usually
+  // small, gap between the two.
+  //
+  // The old timeout branch in renderRfidCards() only checked bleReconnecting
+  // and fired NO TAG the instant it saw false. When that happened to run
+  // (the deferred nudge from setBleReconnecting(false), or the 500ms poll)
+  // in that gap - after the link settled but before the resolving packet
+  // had actually arrived - it declared NO TAG and cleared the pending scan.
+  // The genuinely-found packet then showed up moments later, updated
+  // rfidHeldResult (that update is unconditional, which is why the card
+  // still looked right), but rfidOneShotDeadline was already null, so
+  // logScanResult() was never reached. A real find, silently never logged.
+  //
+  // Fix: don't trust "the link is back" as "nothing more is coming" by
+  // itself. Record WHEN it came back, and hold the timeout branch for one
+  // more short grace window after that - long enough for one real
+  // telemetry line to make the round trip and give the FOUND path (which
+  // already gets first refusal - see setBleReconnecting()'s comment) an
+  // actual chance to run before NO TAG is allowed to fire. Reset to null
+  // whenever a fresh scan arms, same as rfidPendingSawDisconnect, so a
+  // stale settle time from a PREVIOUS scan can't shorten a new one's grace
+  // window.
+  var rfidLinkSettledAtMs = null;
+  var RFID_POST_RECONNECT_GRACE_MS = 600; // ~one telemetry round trip, not a scan-length wait
+
   // The attempt-timeout has elapsed but the collar's BLE link is still
   // mid-reconnect, so the scan is deliberately NOT resolved yet - see the
   // gate in renderRfidCards() for why. Display flag + the reason the card
@@ -1014,6 +1061,7 @@
     // Freshly armed, so this scan hasn't seen its disconnect yet - see the
     // variable's own comment above for what this gates.
     rfidPendingSawDisconnect = false;
+    rfidLinkSettledAtMs = null; // no stale grace window carried over from a previous scan
     // The ONLY thing that clears a held verdict. A new scan is starting, so
     // the previous scan's outcome stops being the answer to "what is on the
     // reader" and the card must not keep showing it while the new one runs.
@@ -1049,8 +1097,25 @@
       // the next call, and there are two callers guaranteeing one: the
       // nudge from setBleReconnecting(false) and the 500ms poll at the
       // bottom of this file. Bound on a held scan is therefore the
-      // attempt budget + at most ~20s.
-      if (bleReconnecting) {
+      // attempt budget + at most ~20s + the grace window just below.
+      //
+      // 2026-08-14: bleReconnecting alone is NOT enough to conclude the
+      // scan's result has arrived, only that the link has. "command channel
+      // ready" prints as soon as this gateway re-subscribes to notify -
+      // before the collar has necessarily sent, let alone this tab has
+      // received, its first fresh post-reconnect packet. Firing NO TAG the
+      // instant bleReconnecting went false was concluding "nothing found"
+      // in that gap, on packets that hadn't arrived yet - a real find would
+      // show up moments later, correctly update the held card (that part is
+      // unconditional), but find rfidOneShotDeadline already cleared and
+      // never get logged. See rfidLinkSettledAtMs's own comment for the
+      // full story. So: hold not just while reconnecting, but for a short
+      // grace window after the link settles too, giving one real telemetry
+      // round trip a chance to land - and with it, the FOUND-resolution
+      // branch a chance to claim this scan first, exactly as intended.
+      var withinPostReconnectGrace = rfidLinkSettledAtMs !== null &&
+        (now - rfidLinkSettledAtMs) < RFID_POST_RECONNECT_GRACE_MS;
+      if (bleReconnecting || withinPostReconnectGrace) {
         rfidResolveHeldForLink = true;
       } else {
         rfidResolveHeldForLink = false;
