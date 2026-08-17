@@ -35,6 +35,25 @@
        control exists until the registry says so. -->
   <div id="power-slot" class="power-slot"></div>
 
+  <!-- Record IMU's toggle, moved up here the same way WAKE was - the two
+       controls an operator wants without hunting for them mid-session.
+       Moved as the ACTUAL button (same id, app.js finds it by id
+       regardless of where it lives), not a second copy - see the Record
+       IMU panel below for the rest of its controls (Clear, Save Until Now,
+       the auto-save interval, the data table), which stayed put; this is
+       just the primary on/off action promoted up top. The status span next
+       to it mirrors imu-log-meta in that panel (both updated together by
+       updateImuRecordingStatus() in app.js) so "how many samples, how
+       long" is readable from up here too, not just when scrolled down to
+       the panel itself. -->
+  <div id="record-slot" class="record-slot">
+    <button id="btn-imu-log-toggle" class="press-toggle scan-auto-toggle"
+            title="Records EVERY telemetry record - full serial resolution, nothing skipped - and auto-saves the buffer on the interval set in the Record IMU panel below. Pressing it again stops AND saves whatever's left. Runs in THIS browser tab only - it stops if the tab is closed.">
+      Record IMU
+    </button>
+    <span id="imu-record-status-top" class="muted small">0 samples buffered</span>
+  </div>
+
   <div class="conn">
     <select id="port-select" aria-label="Serial port">
       <option value="">Scanning ports&hellip;</option>
@@ -406,15 +425,14 @@
               title="Cuts the tape without stopping the reel: downloads everything buffered SO FAR as a CSV and empties the buffer, while recording carries straight on into a fresh buffer. Nothing stops, nothing is lost - the next file simply picks up where this one ends.">Save Until Now</button>
     </h2>
 
+    <!-- The Record IMU toggle itself now lives in the header (see
+         #record-slot near the top of this document) - this is the rest of
+         the controls that go with it. -->
     <div class="scan-controls">
       <label class="param" title="While recording, the buffer is auto-saved (CSV downloaded, then cleared) on this interval.">
         auto-save every (min)
         <input id="imu-log-period-input" type="number" min="1" max="120" value="5">
       </label>
-      <button id="btn-imu-log-toggle" class="press-toggle scan-auto-toggle"
-              title="Records EVERY telemetry record - full serial resolution, nothing skipped - and auto-saves the buffer on the interval above. Pressing it again stops AND saves whatever's left. Runs in THIS browser tab only - it stops if the tab is closed.">
-        Record IMU
-      </button>
     </div>
 
     <div class="scan-table-wrap">

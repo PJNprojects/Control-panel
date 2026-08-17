@@ -79,6 +79,7 @@
   var imuLogBody         = el("imu-log-body");
   imuLogBody.dataset.empty = "1";
   var imuLogMeta          = el("imu-log-meta");
+  var imuLogMetaTop       = el("imu-record-status-top"); // header mirror, see updateImuRecordingStatus()
   var btnImuLogClear      = el("btn-imu-log-clear");
   var btnImuLogDownload   = el("btn-imu-log-download");
   var imuLogPeriodInput   = el("imu-log-period-input");
@@ -1745,8 +1746,34 @@
   var imuLogOn = false;
   var imuAutosaveTimerId = null;
 
+  // Wall-clock start of the CURRENT RECORDING SESSION - set once when the
+  // header/panel toggle turns recording on, cleared when it turns off.
+  // Deliberately NOT touched by clearImuLogBuffer()/flushImuLog(): "Save
+  // Until Now" cuts the tape and starts a fresh buffer, but the reel keeps
+  // turning (see flushImuLog()'s own comment) - the elapsed-time readout
+  // has to keep counting through that exactly like the tape deck it's
+  // modelled on, not reset to 0 every time a chunk gets saved.
+  var imuRecordingStartedAtMs = null;
+  var imuRecordingTickId = null;
+
   function fmt(value, digits) {
     return value === null || value === undefined ? "" : value.toFixed(digits);
+  }
+
+  // The one place either status readout's text gets written - see
+  // imuLogMeta (Record IMU panel) and imuLogMetaTop (header, next to the
+  // relocated toggle) below, both driven from here so they can never say
+  // two different things. "buffered" while idle (matches the old text
+  // exactly), "recording" with an elapsed HH:MM:SS while on - ticked once a
+  // second (imuRecordingTickId) so the seconds keep moving even between
+  // telemetry packets (~570ms apart), not just each time a sample lands.
+  function updateImuRecordingStatus() {
+    var sampleText = imuLog.length + " sample" + (imuLog.length === 1 ? "" : "s");
+    var text = (imuLogOn && imuRecordingStartedAtMs !== null)
+      ? sampleText + " · " + formatHMS(Math.floor((Date.now() - imuRecordingStartedAtMs) / 1000)) + " recording"
+      : sampleText + " buffered";
+    imuLogMeta.textContent = text;
+    if (imuLogMetaTop) { imuLogMetaTop.textContent = text; }
   }
 
   // Called from updateImu() for every telemetry record while imuLogOn.
@@ -1765,7 +1792,7 @@
     imuLog.unshift(entry);
     if (imuLog.length > IMU_LOG_MAX) { imuLog.length = IMU_LOG_MAX; }
     prependImuLogRow(entry);
-    imuLogMeta.textContent = imuLog.length + " sample" + (imuLog.length === 1 ? "" : "s") + " buffered";
+    updateImuRecordingStatus();
   }
 
   function prependImuLogRow(e) {
@@ -1890,7 +1917,10 @@
     imuLog = [];
     imuLogBody.innerHTML = '<tr><td colspan="11" class="muted">No samples logged yet.</td></tr>';
     imuLogBody.dataset.empty = "1";
-    imuLogMeta.textContent = "0 samples buffered";
+    // NOT a reset of imuRecordingStartedAtMs - see that variable's own
+    // comment. This only zeroes the sample count; the elapsed-time half of
+    // the readout (if still recording) keeps counting through a cut.
+    updateImuRecordingStatus();
   }
 
   // The one path "Save Until Now", the auto-save timer, and stopping the
@@ -1942,9 +1972,17 @@
       scheduleNextImuAutosave();
       // Capture itself starts happening on the next updateImu() call, not
       // here - it's driven by telemetry arriving, not by this timer.
+      imuRecordingStartedAtMs = Date.now();
+      if (imuRecordingTickId !== null) { clearInterval(imuRecordingTickId); }
+      // 1s tick so the elapsed time keeps moving between telemetry packets
+      // (~570ms apart) rather than only updating once per sample landed.
+      imuRecordingTickId = setInterval(updateImuRecordingStatus, 1000);
+      updateImuRecordingStatus();
     } else {
       btnImuLogToggle.textContent = "Record IMU";
       if (imuAutosaveTimerId !== null) { clearTimeout(imuAutosaveTimerId); imuAutosaveTimerId = null; }
+      if (imuRecordingTickId !== null) { clearInterval(imuRecordingTickId); imuRecordingTickId = null; }
+      imuRecordingStartedAtMs = null;
       flushImuLog("stopped");   // don't lose whatever was captured since the last auto-save
     }
   });

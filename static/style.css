@@ -92,6 +92,12 @@ h3 {
    would show nothing rather than a gap. */
 .power-slot { display: flex; align-items: center; }
 
+/* Record IMU's toggle, promoted up here same as power-slot just above -
+   plain flex row, the button keeps its own .press-toggle/.scan-auto-toggle
+   sizing from lower down in this file, nothing to override. */
+.record-slot { display: flex; align-items: center; gap: 8px; }
+#record-slot .scan-auto-toggle { min-width: 0; } /* header is tighter than the panel it came from */
+
 .conn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .dot {
