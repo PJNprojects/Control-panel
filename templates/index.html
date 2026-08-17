@@ -24,7 +24,15 @@
 
 <header class="topbar">
   <div class="brand">
-    <h1>Collar Control Panel</h1>
+    <h1>Collar Control Panel
+      <!-- Server-rendered (backend/app.py's PANEL_VERSION), not read from
+           app.js or git - so it shows up even on a plain folder copy with
+           no .git directory (a zip transfer, the Mac handoff's rsync copy).
+           Bumped by hand alongside the matching CHANGELOG.md entry + git
+           tag - the one place a "which build is this" glance needs to
+           check. -->
+      <span id="panel-version" class="version-badge" title="Matches the git tag + CHANGELOG.md entry of the same name.">{{ panel_version }}</span>
+    </h1>
     <span class="sub">ESP32 gateway &rarr; CattleNode collar &middot; {{ baud }} baud</span>
   </div>
 

@@ -54,6 +54,15 @@ from serial_link import (  # noqa: E402
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Shown in the page header so a glance at the browser tells you which build
+# you're looking at - useful the moment more than one copy of this folder
+# exists (a second machine, a zip backup, a Mac transfer). Bump this by hand
+# alongside the matching CHANGELOG.md entry and git tag - deliberately a
+# plain string, not derived from `git describe` at request time, so the page
+# still shows a version when run from a plain copy of this folder with no
+# .git directory at all (a zip transfer, the Mac handoff doc's rsync copy).
+PANEL_VERSION = "V10.0.1"
+
 app = Flask(
     __name__,
     template_folder=os.path.join(PROJECT_ROOT, "templates"),
@@ -84,7 +93,7 @@ def _error(message, status=400):
 
 @app.route("/")
 def index():
-    return render_template("index.html", baud=link.baud)
+    return render_template("index.html", baud=link.baud, panel_version=PANEL_VERSION)
 
 
 # ---------------------------------------------------------------------------

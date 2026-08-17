@@ -85,6 +85,19 @@ h3 {
 }
 
 .brand .sub { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+h1 { display: inline-flex; align-items: center; gap: 8px; }
+.version-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 2px 8px;
+  vertical-align: middle;
+}
 
 /* Holds whichever control app.js routes here (SLEEP/WAKE, by toggle_group -
    see loadCommands() in app.js). Empty and collapses to nothing if the
