@@ -6,6 +6,70 @@ git repository and their own tag series.
 
 ---
 
+## V11.0.0 — 2026-08-14
+
+Numbering note: the last version marker in this repo's history was "V10.0.0" in commit
+`c371dfc`'s own message (never tagged). This entry continues that line rather than the older
+`V1.0.0`/`V1.0.1` TAG series two commits earlier, so the number only ever goes up when read
+against the actual commit log. First entry in this file tagged with an annotated git tag
+(`V11.0.0`) since those two.
+
+A full pass over the operator UI, in several rounds: cleanup, an audit trail for Scan History,
+a Record/Replay overhaul, a startup readiness gate, and a set of default/UX changes requested
+after hands-on use. Verified throughout via `node -c`, HTML tag-balance checks, and (where the
+Browser pane was reachable that session) a live Flask load with console/network inspection —
+never against real hardware. See individual commits between `baf555b` and `b7744ea` for the
+full reasoning behind each change; this entry is the summary.
+
+### Removed
+- Tag Presence Detector panel (self-contained; fully requested)
+- Temp / RFID ID columns from the IMU recorder (redundant with Scan History)
+
+### Scan History
+- Real `DD-MM-YYYY HH:MM:SS` timestamp + a visible sequence number column (the dedup id
+  already existed internally, was never shown)
+- **Fixed a real bug**: a scan could resolve FOUND on the card while logging NO TAG to
+  history, because the timeout branch trusted `bleReconnecting` alone as "nothing more is
+  coming" - it isn't; "command channel ready" prints before the resolving packet necessarily
+  has. Added a short post-reconnect grace window so the FOUND path gets first refusal, as
+  originally intended
+- Temperature shown in both °C and °F everywhere it appears (card, table, CSV, Latest Reading)
+- Auto-Scan: synced countdown ring, green(idle)/red(running) states, period is now three
+  HH:MM:SS fields instead of one seconds box (was capped at 3600s/1h, now effectively
+  open-ended)
+- New: **Alarm** - a one-shot scan armed against a specific clock time (not a repeating
+  period), fires once at the next occurrence and disarms itself, source-tagged `"alarm"` in
+  the history table
+- `m` (attempt cap) default changed 20 → 5 everywhere it's set (registry, Auto-Scan, Alarm all
+  read the same field)
+
+### Record IMU (renamed from IMU Log) + Replay
+- "Record IMU" / "Save Until Now" naming (cut-the-tape-keep-rolling semantics unchanged)
+- Unix ms timestamps in the table and CSV; CSV gains a metadata line (avg sample rate, count,
+  duration)
+- Accel/gyro charts widened, independently pausable and scrollable through a much larger
+  retained buffer (150 → 3000 samples) instead of just the live window
+- New Replay mode: load a saved CSV, play it back through the exact rendering path live
+  telemetry uses, scrub control, unmistakable REPLAY badge, live telemetry keeps updating
+  everything replay doesn't own
+- Record IMU's toggle promoted to the header (next to WAKE); replay controls moved out of the
+  recorder panel to sit next to the IMU dial they actually drive
+- Live "N samples · HH:MM:SS recording" status (was sample count only), shown in both the
+  header and the panel, tracking the whole session across "Save Until Now" cuts
+
+### Startup readiness gate
+- RFID/POWER/IMU controls (and the raw command box) now stay locked until three checks pass:
+  serial port open, the gateway has said *something*, and the collar's BLE link is confirmed
+  up (`ble_connected=1` on a real record) - not just "the COM port opened." Bounded: a 15s
+  timeout unlocks anyway with a visible warning rather than risking a permanent lock
+
+### Layout
+- WAKE/SLEEP moved into the header (routed by `toggle_group === "power"`, not a hardcoded
+  command name)
+- Raw Command box moved under the Log panel; Reset origin moved under the gyro bar graph
+
+---
+
 ## V1.0.0 — 2026-08-10
 
 First version. A Flask + pyserial control panel for the ESP32 gateway's USB
