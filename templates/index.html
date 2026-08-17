@@ -80,7 +80,7 @@
     <div id="imu-panel" class="panel-subsection">
     <h2>IMU Orientation
       <!-- Shown ONLY while a recording is being played back through these
-           widgets (see the Replay section in the Record IMU panel below).
+           widgets (see the Replay section further down this same widget).
            Deliberately loud and deliberately orange: blue+pulse is already
            spoken for by SCANNING (rfid-scanning-pulse), green by "on/found",
            amber-ish red by errors - "what's on this dial is history, not the
@@ -88,7 +88,7 @@
            of those, so it gets its own colour token (--replay) and its own
            hard-step blink rather than the smooth opacity fade SCANNING uses. -->
       <span id="imu-replay-badge" class="replay-badge"
-            title="These widgets are being driven by a loaded recording, not by the collar. Press Stop in the Record IMU panel to hand them back to live telemetry.">REPLAY</span>
+            title="These widgets are being driven by a loaded recording, not by the collar. Press Stop in the Replay controls below to hand them back to live telemetry.">REPLAY</span>
       <span class="muted small" id="imu-meta">yaw is relative &amp; drifts &mdash; no magnetometer on the collar</span>
     </h2>
     <div class="imu-widget">
@@ -186,6 +186,44 @@
         </div>
       </div>
 
+      <!-- Replay: the read side of the Record IMU tape (see that panel,
+           further down, for the write side). Entirely client-side - a
+           FileReader and an <input type="file">, no upload, no Flask route,
+           no file ever leaves the machine. It drives EXACTLY the widgets
+           live telemetry drives (this dial, crosshair, gravity bar, gyro
+           bars, both charts) through one shared applyImuSample() in app.js,
+           so a replayed frame and a live frame can never render
+           differently. It touches nothing else: Latest Reading, the Log
+           panel and Scan History all carry on showing the real collar while
+           a replay plays.
+
+           Placed here, in .imu-widget's flex row next to the dial it
+           actually drives, rather than under the recorder that writes its
+           input file - the operator watches THIS gizmo while replaying, so
+           the controls for it belong next to it, not two panels away. -->
+      <div class="replay-section">
+        <h3>Replay a saved recording
+          <span class="muted small">&mdash; drives the widgets on this row; live telemetry keeps updating everything else</span>
+        </h3>
+
+        <div class="replay-controls">
+          <input id="replay-file" type="file" accept=".csv,text/csv"
+                 title="Open a CSV written by Record IMU below. Files without the leading '#' metadata line (older exports, hand-edited files) still work - playback timing then comes from the gap between each row's own timestamp instead of the recorded average rate.">
+          <button id="btn-replay-play" class="secondary" disabled
+                  title="Step through the loaded recording at the constant rate its metadata line recorded (or at each row's own timestamp gap if there is no metadata line).">Play</button>
+          <button id="btn-replay-stop" class="ghost small" disabled
+                  title="End the replay and hand the IMU widgets straight back to live telemetry. The loaded file stays loaded - press Play to run it again.">Stop</button>
+          <span id="replay-meta" class="muted small">no recording loaded</span>
+        </div>
+
+        <div class="replay-scrub-row">
+          <input id="replay-scrub" type="range" min="0" max="0" value="0" step="1" disabled
+                 aria-label="Position in the loaded recording"
+                 title="Position in the recording. Advances by itself during playback and can be dragged at any time, playing or paused - the widgets jump to that exact sample as you drag.">
+          <span id="replay-position" class="replay-position">no recording loaded</span>
+        </div>
+      </div>
+
     </div>
 
     <!-- Rolling window, not a log — bounded arrays redrawn to a canvas, so
@@ -268,9 +306,22 @@
     </h2>
 
     <div class="scan-controls">
-      <label class="param" title="How often the auto-scan timer fires a one-shot READ RFID while running.">
-        period (s)
-        <input id="scan-period-input" type="number" min="2" max="3600" value="30">
+      <!-- Three fields instead of one raw-seconds box - HH:MM:SS reads
+           directly (an operator typing "every 2 hours" writes 02:00:00, not
+           7200) and the range is now genuinely open-ended (HH goes to 99)
+           instead of capped at 3600s/1h the way the single field was.
+           scheduleNextAutoScan() in app.js sums these into one seconds
+           total at fire-scheduling time - there is no separate "period in
+           seconds" value stored anywhere else. -->
+      <label class="param" title="How often the auto-scan timer fires a one-shot READ RFID while running, as hours : minutes : seconds.">
+        period (hh:mm:ss)
+        <span class="hms-group">
+          <input id="scan-period-hh" class="hms-input" type="number" min="0" max="99" value="0" aria-label="hours">
+          <span class="hms-colon">:</span>
+          <input id="scan-period-mm" class="hms-input" type="number" min="0" max="59" value="0" aria-label="minutes">
+          <span class="hms-colon">:</span>
+          <input id="scan-period-ss" class="hms-input" type="number" min="0" max="59" value="30" aria-label="seconds">
+        </span>
       </label>
       <label class="param" title="m - attempt cap per scheduled scan, ~70ms each. n is fixed at 1 (stop as soon as one CRC-valid read lands), same as the READ RFID <m> button above.">
         m
@@ -297,6 +348,29 @@
           <span id="auto-countdown-text" class="auto-countdown-text">-</span>
         </div>
       </div>
+
+      <!-- Alarm: a SEPARATE, one-shot scheduled scan, distinct from the
+           repeating period-based Auto-Scan to its left. You pick a clock
+           TIME (not a duration) and it fires exactly once, at the next
+           occurrence of that time (today if still ahead, tomorrow if it's
+           already passed) - same idea as setting a phone alarm, not a
+           repeating timer. Goes through the exact same
+           sendCommand()/armRfidScan() path Auto-Scan and the manual button
+           use, tagged source="alarm" so Scan History's Source column shows
+           which control produced each row. Disarms itself after firing -
+           re-arm it for the next day if you want it again. See armAlarm()/
+           fireAlarmScan() in app.js. -->
+      <div class="scan-alarm-wrap">
+        <label class="param" title="Clock time the alarm fires at - next occurrence, today or tomorrow.">
+          alarm at
+          <input id="scan-alarm-time" type="time" step="60">
+        </label>
+        <button id="btn-scan-alarm-toggle" class="press-toggle scan-auto-toggle"
+                title="Arms a ONE-SHOT READ RFID 1 {m} (m from the field above) at the next occurrence of the time on the left. Fires once, then disarms itself - re-arm for the next occurrence. Runs in THIS browser tab only, same caveat as Auto-Scan.">
+          Set Alarm
+        </button>
+        <span id="scan-alarm-status" class="muted small">not armed</span>
+      </div>
     </div>
 
     <div class="scan-table-wrap">
@@ -318,13 +392,12 @@
        "Save Until Now" / stopping the recording do the same save-and-clear on
        demand. Still browser-tab-only - see the tooltip on the toggle.
 
-       ONE PANEL, TWO HALVES of the same tape-deck idea: the top half writes a
-       recording out (record / save / the live buffer table), the bottom half
-       reads one back in and plays it through the IMU widgets above. They share
-       a file format and nothing else - replay never touches the record buffer
-       and recording never touches replay - but they belong together, because
-       the only thing that produces a file replay can open is the recorder
-       three inches above it. -->
+       The READ side of this tape (Replay) used to live directly under this
+       write side, in this same panel. Moved up to sit next to the IMU dial
+       it actually drives instead - see the "Replay" block inside
+       .imu-widget above. They still share a file format and nothing else:
+       replay never touches the record buffer, recording never touches
+       replay. -->
   <section class="panel" id="imu-log-panel">
     <h2>Record IMU
       <span class="muted small" id="imu-log-meta">0 samples buffered</span>
@@ -365,36 +438,6 @@
       </table>
     </div>
 
-    <!-- Replay: the read side of the same tape. Entirely client-side - a
-         FileReader and an <input type="file">, no upload, no Flask route, no
-         file ever leaves the machine. It drives EXACTLY the widgets live
-         telemetry drives (dial, crosshair, gravity bar, gyro bars, both
-         charts) through one shared applyImuSample() in app.js, so a replayed
-         frame and a live frame can never render differently. It touches
-         nothing else: Latest Reading, the Log panel and Scan History all
-         carry on showing the real collar while a replay plays. -->
-    <div class="replay-section">
-      <h3>Replay a saved recording
-        <span class="muted small">&mdash; drives the IMU widgets above; live telemetry keeps updating everything else</span>
-      </h3>
-
-      <div class="replay-controls">
-        <input id="replay-file" type="file" accept=".csv,text/csv"
-               title="Open a CSV written by Record IMU above. Files without the leading '#' metadata line (older exports, hand-edited files) still work - playback timing then comes from the gap between each row's own timestamp instead of the recorded average rate.">
-        <button id="btn-replay-play" class="secondary" disabled
-                title="Step through the loaded recording at the constant rate its metadata line recorded (or at each row's own timestamp gap if there is no metadata line).">Play</button>
-        <button id="btn-replay-stop" class="ghost small" disabled
-                title="End the replay and hand the IMU widgets straight back to live telemetry. The loaded file stays loaded - press Play to run it again.">Stop</button>
-        <span id="replay-meta" class="muted small">no recording loaded</span>
-      </div>
-
-      <div class="replay-scrub-row">
-        <input id="replay-scrub" type="range" min="0" max="0" value="0" step="1" disabled
-               aria-label="Position in the loaded recording"
-               title="Position in the recording. Advances by itself during playback and can be dragged at any time, playing or paused - the widgets jump to that exact sample as you drag.">
-        <span id="replay-position" class="replay-position">no recording loaded</span>
-      </div>
-    </div>
   </section>
 
   <div class="split">

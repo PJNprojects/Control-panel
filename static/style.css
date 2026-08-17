@@ -699,10 +699,25 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 }
 #imu-panel.is-replaying .chart-card { border-color: var(--replay); }
 
+/* Was a full-width block under a dashed top border, stacked below the
+   record table (see the moved-comment in index.html for why it lives here
+   now instead). As a flex ITEM inside .imu-widget's row, a top-border
+   divider no longer means anything - replaced with a self-contained box
+   (border all round, own background) so it still reads as one coherent
+   control cluster sitting next to the dial rather than bleeding into the
+   gauges beside it. flex-basis/min-width let it take the remaining row
+   width on a wide screen and drop to its own full-width line when the
+   panel wraps, same wrapping behaviour every other .imu-widget child
+   already gets for free from the row's own flex-wrap. */
 .replay-section {
-  margin-top: 12px;
-  border-top: 1px dashed var(--line);
-  padding-top: 12px;
+  flex: 1 1 320px;
+  min-width: 280px;
+  max-width: 480px;
+  align-self: stretch;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--inset);
+  padding: 10px 12px;
 }
 .replay-section h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .replay-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -750,6 +765,13 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   border-bottom: 1px dashed var(--line);
 }
 .scan-controls .param input { width: 64px; }
+
+/* HH:MM:SS period entry - three narrow number boxes instead of one wide
+   raw-seconds box, joined visually with colons so they read as one value
+   ("02:00:00") rather than three unrelated fields. */
+.hms-group { display: inline-flex; align-items: center; gap: 3px; }
+.hms-input { width: 38px !important; text-align: center; }
+.hms-colon { color: var(--muted); font-family: var(--mono); }
 .scan-auto-toggle {
   width: auto;
   min-width: 150px;
@@ -770,6 +792,19 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 #btn-scan-auto-toggle.is-on  { background: var(--err); border-color: #b23a3a; color: #2a0808; }
 
 .scan-auto-wrap { display: flex; align-items: center; gap: 8px; }
+
+/* ---- Alarm (one-shot, clock-time-triggered scan) ---- */
+/* Same wrap/gap pattern as .scan-auto-wrap just above, and the same
+   idle-green/armed-red colour language - "armed" reads as "will act
+   without you touching it again", which is exactly what "running" means
+   for Auto-Scan too. ID-scoped for the identical reason
+   #btn-scan-auto-toggle is: .scan-auto-toggle is shared (for sizing only)
+   with #btn-imu-log-toggle, and a class-level colour rule would repaint
+   that button too. */
+.scan-alarm-wrap { display: flex; align-items: center; gap: 8px; }
+#btn-scan-alarm-toggle.is-off { background: var(--ok);  border-color: #3fae6c; color: #06210f; }
+#btn-scan-alarm-toggle.is-on  { background: var(--err); border-color: #b23a3a; color: #2a0808; }
+#scan-alarm-time:disabled { opacity: .55; }
 
 /* ---- Auto-Scan countdown ring ---- */
 /* Purely a visual read of the timer scheduleNextAutoScan() (app.js) already

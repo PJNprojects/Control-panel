@@ -62,8 +62,15 @@
   var scanHistoryMeta   = el("scan-history-meta");
   var btnScanClear      = el("btn-scan-clear");
   var btnScanDownload   = el("btn-scan-download");
-  var scanPeriodInput   = el("scan-period-input");
+  // Three fields (HH/MM/SS), not one raw-seconds box - see
+  // readAutoScanPeriodSeconds() below, the one place that sums them.
+  var scanPeriodHH      = el("scan-period-hh");
+  var scanPeriodMM      = el("scan-period-mm");
+  var scanPeriodSS      = el("scan-period-ss");
   var scanMInput        = el("scan-m-input");
+  var scanAlarmTimeInput  = el("scan-alarm-time");
+  var btnScanAlarmToggle  = el("btn-scan-alarm-toggle");
+  var scanAlarmStatus     = el("scan-alarm-status");
   var btnScanAutoToggle = el("btn-scan-auto-toggle");
   var scanAutoCountdown     = el("scan-auto-countdown");
   var scanAutoCountdownRing = el("auto-countdown-ring");
@@ -1106,7 +1113,7 @@
   //   { found: false, id: null,              temp: null, at: <ms> }
   var rfidHeldResult = null;
   var rfidOneShotDeadline = null; // wall-clock ms after which "no tag" fires, or null if not armed
-  var rfidPendingSource   = null; // "manual" | "auto" - who armed the current pending scan, for the history log
+  var rfidPendingSource   = null; // "manual" | "auto" | "alarm" - who armed the current pending scan, for the history log
 
   // Has THIS armed scan seen its own BLE disconnect yet? Set true in
   // setBleReconnecting()'s isReconnecting branch (see the comment there),
@@ -1178,7 +1185,7 @@
   // Arms both the highlight card's "no tag found" flash AND a scan-history
   // row - one probe, one outcome, recorded in both places. `source` is
   // which control fired the READ RFID <m> (see the Scan History section
-  // below for where "manual" and "auto" come from).
+  // below for where "manual", "auto" and "alarm" come from).
   function armRfidScan(attempts, source) {
     if (!attempts || attempts <= 0) { return; }
     if (rfidScanPending()) {
@@ -1526,6 +1533,25 @@
     scanAutoCountdownText.textContent = remainingS + "s";
   }
 
+  // Sums the HH/MM/SS fields into one seconds total - the only place that
+  // conversion happens, so scheduleNextAutoScan() and the click handler
+  // (both of which need the same number) can never read it two different
+  // ways. Same 2s floor the old single-field min="2" enforced; a blank or
+  // non-numeric field reads as 0, not NaN poisoning the sum.
+  function readAutoScanPeriodSeconds() {
+    var hh = parseInt(scanPeriodHH.value, 10) || 0;
+    var mm = parseInt(scanPeriodMM.value, 10) || 0;
+    var ss = parseInt(scanPeriodSS.value, 10) || 0;
+    return Math.max(2, hh * 3600 + mm * 60 + ss);
+  }
+
+  function formatHMS(totalS) {
+    var hh = Math.floor(totalS / 3600);
+    var mm = Math.floor((totalS % 3600) / 60);
+    var ss = totalS % 60;
+    return pad2(hh) + ":" + pad2(mm) + ":" + pad2(ss);
+  }
+
   function triggerAutoScan() {
     if (bleReconnecting) {
       localNote("auto-scan: skipped this cycle - BLE still reconnecting", "info");
@@ -1553,7 +1579,7 @@
 
   function scheduleNextAutoScan() {
     if (!autoScanOn) { return; }
-    var periodS = Math.max(2, parseInt(scanPeriodInput.value, 10) || 30);
+    var periodS = readAutoScanPeriodSeconds();
     // This is the one place that actually knows the next fire time, so it's
     // also the one place that resyncs both countdown displays (the ring's
     // sweep and the "Ns" text's reference point) to it - see the two
@@ -1573,8 +1599,8 @@
     btnScanAutoToggle.classList.toggle("is-off", !autoScanOn);
     scanAutoCountdown.classList.toggle("is-active", autoScanOn);
     if (autoScanOn) {
-      var periodS = Math.max(2, parseInt(scanPeriodInput.value, 10) || 30);
-      btnScanAutoToggle.textContent = "Stop Auto-Scan (every " + periodS + "s)";
+      var periodS = readAutoScanPeriodSeconds();
+      btnScanAutoToggle.textContent = "Stop Auto-Scan (every " + formatHMS(periodS) + ")";
       if (autoScanCountdownTickId !== null) { clearInterval(autoScanCountdownTickId); }
       autoScanCountdownTickId = setInterval(updateAutoCountdownText, AUTO_COUNTDOWN_TICK_MS);
       triggerAutoScan();          // fire the first one immediately, not after a full period's wait
@@ -1587,6 +1613,97 @@
       updateAutoCountdownText();               // snaps the text back to "-"
       scanAutoCountdownRing.style.animation = "none"; // freeze/neutralize, not left sweeping while hidden
     }
+  });
+
+  // --- Alarm: ONE scan at a specific clock time, not a repeating period ---
+  // Deliberately a separate control from Auto-Scan above, not a variant of
+  // it - "every 30s" and "at 14:30" are different questions with different
+  // UI (a duration vs a time-of-day), and folding them into one control
+  // would have made both harder to read. Shares everything downstream of
+  // "a scan got armed" with Auto-Scan and the manual button though: same
+  // sendCommand()/armRfidScan() call, same rfidScanPending()/bleReconnecting
+  // guards, same Scan History row shape - only the trigger and the source
+  // label ("alarm") differ.
+  var alarmArmed      = false;
+  var alarmFireAtMs   = null; // wall-clock ms of the next fire, or null if not armed
+  var alarmTimeoutId  = null;
+  var alarmStatusTickId = null;
+
+  // "Next occurrence" of a clock time, same rule a phone alarm uses: today
+  // if that time hasn't happened yet, tomorrow if it has (or if it's this
+  // exact instant - <= not <, so a fire that lands exactly on the minute
+  // reschedules a full day out instead of firing again immediately).
+  function computeNextAlarmMs(hh, mm) {
+    var now = new Date();
+    var target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+    if (target.getTime() <= now.getTime()) { target.setDate(target.getDate() + 1); }
+    return target.getTime();
+  }
+
+  function updateAlarmStatusText() {
+    if (!alarmArmed || alarmFireAtMs === null) { scanAlarmStatus.textContent = "not armed"; return; }
+    var remainingS = Math.max(0, Math.round((alarmFireAtMs - Date.now()) / 1000));
+    scanAlarmStatus.textContent = "fires at " + scanAlarmTimeInput.value +
+      " (in " + formatHMS(remainingS) + ")";
+  }
+
+  function disarmAlarm() {
+    alarmArmed = false;
+    alarmFireAtMs = null;
+    if (alarmTimeoutId !== null) { clearTimeout(alarmTimeoutId); alarmTimeoutId = null; }
+    if (alarmStatusTickId !== null) { clearInterval(alarmStatusTickId); alarmStatusTickId = null; }
+    btnScanAlarmToggle.classList.remove("is-on");
+    btnScanAlarmToggle.classList.add("is-off");
+    btnScanAlarmToggle.textContent = "Set Alarm";
+    scanAlarmTimeInput.disabled = false;
+    scanAlarmStatus.textContent = "not armed";
+  }
+
+  // Fires exactly once, then disarms - same "one attempt, one verdict"
+  // philosophy Scan History's own header comment already states for the
+  // manual button. An operator who wants it again tomorrow re-arms it,
+  // same as re-setting a phone alarm; this deliberately does not loop the
+  // way Auto-Scan's period does, they are answering different questions.
+  function fireAlarmScan() {
+    alarmTimeoutId = null;
+    if (bleReconnecting) {
+      localNote("alarm: skipped - BLE still reconnecting", "info");
+    } else if (rfidScanPending()) {
+      localNote("alarm: skipped - a scan is already pending", "info");
+    } else {
+      var m = parseInt(scanMInput.value, 10);
+      if (isNaN(m)) {
+        localNote("alarm: m must be a number", "error");
+      } else {
+        sendCommand("read_rfid_once", { m: m }, null).then(function (ok) {
+          if (ok) { armRfidScan(m, "alarm"); }
+        });
+      }
+    }
+    disarmAlarm();
+  }
+
+  function armAlarm() {
+    var parts = (scanAlarmTimeInput.value || "").split(":");
+    var hh = parseInt(parts[0], 10);
+    var mm = parseInt(parts[1], 10);
+    if (parts.length < 2 || isNaN(hh) || isNaN(mm)) {
+      localNote("alarm: pick a time first", "error");
+      return;
+    }
+    alarmFireAtMs = computeNextAlarmMs(hh, mm);
+    alarmArmed = true;
+    btnScanAlarmToggle.classList.add("is-on");
+    btnScanAlarmToggle.classList.remove("is-off");
+    btnScanAlarmToggle.textContent = "Cancel Alarm";
+    scanAlarmTimeInput.disabled = true; // can't edit the target time while it's armed against it
+    alarmTimeoutId = setTimeout(fireAlarmScan, alarmFireAtMs - Date.now());
+    alarmStatusTickId = setInterval(updateAlarmStatusText, 1000);
+    updateAlarmStatusText();
+  }
+
+  btnScanAlarmToggle.addEventListener("click", function () {
+    if (alarmArmed) { disarmAlarm(); } else { armAlarm(); }
   });
 
   // ---------------------------------------------------------------------
