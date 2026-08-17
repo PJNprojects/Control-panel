@@ -6,13 +6,12 @@ git repository and their own tag series.
 
 ---
 
-## V11.0.0 — 2026-08-14
+## V10.0.1 — 2026-08-14
 
-Numbering note: the last version marker in this repo's history was "V10.0.0" in commit
-`c371dfc`'s own message (never tagged). This entry continues that line rather than the older
-`V1.0.0`/`V1.0.1` TAG series two commits earlier, so the number only ever goes up when read
-against the actual commit log. First entry in this file tagged with an annotated git tag
-(`V11.0.0`) since those two.
+Numbering note: a patch bump on "V10.0.0" — the version marker already in commit `c371dfc`'s
+own message (never tagged) — rather than a jump to a new major version. First entry in this
+file tagged with an annotated git tag (`V10.0.1`) since the older `V1.0.0`/`V1.0.1` series two
+commits earlier.
 
 A full pass over the operator UI, in several rounds: cleanup, an audit trail for Scan History,
 a Record/Replay overhaul, a startup readiness gate, and a set of default/UX changes requested
